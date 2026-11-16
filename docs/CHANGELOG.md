@@ -14,6 +14,11 @@
 - New app/tray icon (smooth edges, sizes 16–256).
 - `.mp4.metrics.txt` diagnostics sidecar is now opt-in (Settings), off by default.
 - H.264 High profile with Main fallback and a 4-second keyframe interval for smaller files.
+- Frame surfaces are pooled and reused (tracked samples) instead of allocating
+  a new GPU texture and view every frame.
+- Standard build: CMake presets, version defined once in CMakeLists.txt,
+  Inno Setup installer (per user, Start menu, uninstaller), CI on every push and
+  a one-click Release workflow. Removed build-windows.cmd and old patch notes.
 
 # Glimpse 0.2.0 — source update
 

@@ -1,6 +1,7 @@
 build/
 build-*/
-portable/
+stage/
+dist/
 *.zip
 *.user
 .vs/

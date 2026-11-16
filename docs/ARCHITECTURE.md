@@ -13,7 +13,8 @@ canvas using D3D11 CopySubresourceRegion. Gaps remain black. The cursor is inclu
 by WGC's default capture behavior. Windows capture indicators are not disabled.
 
 The D3D11 video processor scales the canvas and converts to limited-range
-BT.709 NV12. Samples own distinct textures so encoder retention cannot cause a
+BT.709 NV12. Surfaces come from a pool and return to it only when the encoder releases
+their tracked sample, so encoder retention cannot cause a
 later frame to overwrite an earlier one. GPU-input encoding uses a DXGI device
 manager. Initialization failures retry a software-encoder path with NV12 staging
 readback; the common path avoids CPU copies of pixel data.

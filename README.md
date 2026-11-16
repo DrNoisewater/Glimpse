@@ -4,39 +4,46 @@ A small, local Windows region recorder for Noisewater Labs. Native C++20 / Win32
 Windows.Graphics.Capture, Direct3D 11 and Media Foundation. No browser runtime,
 FFmpeg download, account, server, telemetry or upload integration.
 
-**Status:** builds on Windows with `build-windows.cmd`. The 0.3.0 UI changes
-were syntax-checked with a MinGW cross-compiler and the portable tests pass,
-but they have not yet been run on Windows — build and try them before relying
-on this version.
+## Install
 
-## Build a portable executable
+Download **Glimpse-Setup-x.y.z.exe** from the
+[Releases](https://github.com/DrNoisewater/Glimpse/releases) page and run it.
+It installs per user (no administrator prompt) to
+`%LOCALAPPDATA%\Programs\Glimpse`, adds a Start menu entry and an uninstaller,
+and updates an existing install in place. A portable zip is published next to
+it if you'd rather not install anything.
 
-Requirements: Windows, Visual Studio 2022 or newer with **Desktop development
-with C++**, CMake tools, and Windows 10/11 SDK **10.0.19041 or newer**. SDK
-C++/WinRT headers are used directly; no NuGet dependencies.
+## Build from source
 
-1. Extract this folder to a local directory.
-2. Run `build-windows.cmd` from a Developer Command Prompt, or double-click it
-   if CMake is available on PATH.
-3. On a successful build, run `portable\Glimpse.exe`.
-
-The script compiles Release x64, runs policy tests, and creates
-`Glimpse-Windows-x64.zip`. The executable statically links the MSVC runtime;
-Windows supplies the capture, graphics and codec APIs. No installer is needed.
-Build outputs are not included until an actual Windows build succeeds.
-
-Equivalent commands:
+Requirements: Windows 10/11, Visual Studio 2022 or newer with **Desktop
+development with C++** (includes CMake and a Windows 10/11 SDK, which provides
+C++/WinRT). No other dependencies.
 
 ```powershell
-cmake -S . -B build -A x64 -DBUILD_TESTING=ON
-cmake --build build --config Release --parallel
-ctest --test-dir build -C Release --output-on-failure
-cmake --install build --config Release --prefix portable
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
 ```
 
-The included GitHub Actions workflow builds the same target and uploads a
-portable artifact when this directory is placed at a repository root. It has
-not been submitted or executed as part of this delivery.
+Or open the folder in Visual Studio and pick the **release** preset. The
+program is `build\Release\Glimpse.exe`. It statically links the C++ runtime, so
+it runs on a clean Windows install.
+
+## Releasing
+
+The version lives in one place: `project(Glimpse VERSION x.y.z)` in
+`CMakeLists.txt`. It flows into the EXE's file properties, the app (Settings
+title, tray menu) and the installer.
+
+1. Change the version in `CMakeLists.txt` and commit it.
+2. On GitHub: **Actions → Release → Run workflow**, enter the same version.
+3. The workflow builds on Windows, runs the tests, builds
+   `Glimpse-Setup-x.y.z.exe` (Inno Setup, `installer/Glimpse.iss`) and
+   `Glimpse-x.y.z-portable.zip`, tags `vx.y.z` and publishes the release.
+   Nothing is tagged if any step fails.
+
+Every push also runs **CI**, which builds, tests and builds the installer; the
+files are attached to each run under *Artifacts*.
 
 ## Use
 
@@ -138,8 +145,8 @@ runtime scene classifier or dynamic resolution changes are implemented.
 - Names: `Capture_YYYY-MM-DD_HHMMSS_mmm.mp4`, with a numeric suffix on collisions.
 - Settings: `%LOCALAPPDATA%\Glimpse\settings.ini`, UTF-16, replaced atomically.
 - An optional sign-in entry is written only to the current user's Run key.
-  No administrator privileges are requested. Disable this setting before
-  deleting or moving the portable EXE.
+  No administrator privileges are requested. The uninstaller removes it; if you
+  use the portable zip, turn the setting off before deleting or moving the EXE.
 - Only the `.mp4` is saved by default. Turning on **Save a diagnostics file**
   in Settings also writes a `.mp4.metrics.txt` sidecar with timing and audio
   counters. It is for troubleshooting only, and nothing needs it to play or share the video.
@@ -172,8 +179,9 @@ runtime scene classifier or dynamic resolution changes are implemented.
   encoding was chosen. Windows and its driver choose the transform. If the
   encoder fails after initialization, the app saves what it can and offers a
   readable error; choose software mode before retrying.
-- Each submitted frame owns its own NV12 texture, avoiding premature reuse by
-  an asynchronous encoder. A reusable surface pool is a future optimization.
+- NV12 frame surfaces come from a small pool. A surface is reused only after
+  Media Foundation releases the sample holding it (tracked samples), so an
+  asynchronous encoder never sees a frame overwritten.
 - Theme (light/dark) is read at launch. Panels use anti-aliased GDI+ drawing,
   Segoe Fluent Icons / Segoe MDL2 Assets glyphs, native rounded corners on
   Windows 11 and a region fallback on Windows 10. The hotkey control keeps
@@ -188,7 +196,7 @@ Windows default microphone and one for default playback loopback. This prevents
 blocking H.264 encoding, GPU conversion, or MP4 I/O on the screen-recording
 thread from starving both audio capture buffers. The audio samples still mix
 on a synchronized timestamped 48-kHz stereo ring, with a final 300-ms output
-staging margin. See `AUDIO-THREAD-FIX-NOTES.txt` for details and limitations.
+staging margin.
 
 ### Troubleshooting crackle or pops in recorded microphone audio
 

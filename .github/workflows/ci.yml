@@ -1,0 +1,63 @@
+# Builds and tests every push and pull request on Windows, and builds the
+# installer so a broken installer script is caught before a release.
+# Download the result from the run's "Artifacts" section to try it.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version from CMakeLists.txt
+        run: |
+          $m = Select-String -Path CMakeLists.txt -Pattern 'project\(Glimpse VERSION (\d+\.\d+\.\d+)'
+          if (-not $m) { throw 'Could not find project(Glimpse VERSION x.y.z) in CMakeLists.txt.' }
+          "VERSION=$($m.Matches[0].Groups[1].Value)" >> $env:GITHUB_ENV
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Stage the files that ship
+        run: cmake --install build --config Release --prefix stage
+
+      - name: Get Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Installing Inno Setup failed.' }
+          }
+
+      - name: Build the installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DAppVersion=$env:VERSION" "/DStageDir=$PWD\stage" "/DOutputDir=$PWD\dist" installer\Glimpse.iss
+          if ($LASTEXITCODE -ne 0) { throw "The installer didn't build (exit $LASTEXITCODE)." }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glimpse-${{ env.VERSION }}-build${{ github.run_number }}
+          path: |
+            stage/Glimpse.exe
+            dist/Glimpse-Setup-*.exe
+          if-no-files-found: error

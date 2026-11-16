@@ -1,4 +1,5 @@
 #include "capture.hpp"
+#include "version.h"
 #include <windowsx.h>
 #include <objidl.h>
 #include <commctrl.h>
@@ -795,7 +796,7 @@ void showShare() {
 void settings() {
     if(state!=State::Idle) return;
     if(settingsWindow) { SetForegroundWindow(settingsWindow); return; }
-    settingsWindow=CreateWindowExW(WS_EX_TOOLWINDOW,L"GlimpsePanel",L"Glimpse settings",
+    settingsWindow=CreateWindowExW(WS_EX_TOOLWINDOW,L"GlimpsePanel",L"Glimpse " GLIMPSE_VERSION L" — Settings",
         WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,560,500,mainWindow,nullptr,instance,nullptr);
     themeWindow(settingsWindow);
     RECT r{0,0,scale(settingsWindow,544),scale(settingsWindow,488)};
@@ -906,7 +907,9 @@ void trayMenu() {
     AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(recent),L"Recent captures");
     AppendMenuW(menu,MF_STRING,Folder,L"Open captures folder");
     AppendMenuW(menu,MF_STRING|(state==State::Idle?0:MF_GRAYED),Settings,L"Settings…");
-    AppendMenuW(menu,MF_SEPARATOR,0,nullptr); AppendMenuW(menu,MF_STRING,Exit,L"Exit");
+    AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+    AppendMenuW(menu,MF_STRING|MF_GRAYED,0,L"Glimpse " GLIMPSE_VERSION);
+    AppendMenuW(menu,MF_STRING,Exit,L"Exit");
     POINT p; GetCursorPos(&p); SetForegroundWindow(mainWindow);
     UINT cmd=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,mainWindow,nullptr);
     DestroyMenu(menu); PostMessageW(mainWindow,WM_NULL,0,0);

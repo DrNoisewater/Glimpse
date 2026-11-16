@@ -1,5 +1,6 @@
 #include "capture.hpp"
 #include "audio.hpp"
+#include "version.h"
 #include <d3d11.h>
 #include <d3d10.h>
 #include <dxgi1_2.h>
@@ -48,6 +49,37 @@ struct Source {
         try { if(session) session.Close(); if(pool) pool.Close(); if(item) item.Closed(closedToken); } catch(...) {}
     }
 };
+// Returns NV12 surfaces to the pool when Media Foundation releases the sample
+// that carried them, so frames reuse a handful of GPU textures instead of
+// allocating a new one (and a new output view) for every frame.
+class SurfacePool final : public IMFAsyncCallback {
+    LONG refs_=1;
+    std::mutex mutex_;
+    std::vector<com_ptr<ID3D11Texture2D>> free_;
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** p) override {
+        if(!p) return E_POINTER;
+        *p=nullptr;
+        if(id==__uuidof(IUnknown)||id==__uuidof(IMFAsyncCallback)) { *p=static_cast<IMFAsyncCallback*>(this); AddRef(); return S_OK; }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ULONG(InterlockedIncrement(&refs_)); }
+    ULONG STDMETHODCALLTYPE Release() override { auto n=InterlockedDecrement(&refs_); if(!n) delete this; return ULONG(n); }
+    HRESULT STDMETHODCALLTYPE GetParameters(DWORD*,DWORD*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Invoke(IMFAsyncResult* result) override {
+        com_ptr<IUnknown> state;
+        if(result && SUCCEEDED(result->GetState(state.put())) && state) {
+            if(auto texture=state.try_as<ID3D11Texture2D>()) give(texture);
+        }
+        return S_OK;
+    }
+    void give(com_ptr<ID3D11Texture2D> texture) { std::lock_guard lock(mutex_); free_.push_back(std::move(texture)); }
+    com_ptr<ID3D11Texture2D> take() {
+        std::lock_guard lock(mutex_);
+        if(free_.empty()) return nullptr;
+        auto texture=std::move(free_.back()); free_.pop_back(); return texture;
+    }
+};
 struct Graphics {
     com_ptr<ID3D11Device> device;
     com_ptr<ID3D11DeviceContext> context;
@@ -57,10 +89,13 @@ struct Graphics {
     com_ptr<ID3D11VideoProcessor> processor;
     com_ptr<ID3D11Texture2D> canvas, staging;
     com_ptr<ID3D11VideoProcessorInputView> inputView;
+    com_ptr<SurfacePool> pool;
+    std::vector<std::pair<ID3D11Texture2D*,com_ptr<ID3D11VideoProcessorOutputView>>> outputs;
     IDirect3DDevice winrtDevice{nullptr};
     Rect area;
     VideoSpec spec;
     Graphics(Rect r, VideoSpec s) : area(r), spec(s) {
+        pool.attach(new SurfacePool());
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
         D3D_FEATURE_LEVEL level;
         HRESULT hr = D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,flags,nullptr,0,
@@ -111,18 +146,46 @@ struct Graphics {
         videoContext->VideoProcessorSetOutputColorSpace(processor.get(),&yuv);
     }
     com_ptr<ID3D11Texture2D> convert() {
-        D3D11_TEXTURE2D_DESC td{};
-        td.Width=spec.width; td.Height=spec.height; td.MipLevels=td.ArraySize=1;
-        td.Format=DXGI_FORMAT_NV12; td.SampleDesc.Count=1; td.Usage=D3D11_USAGE_DEFAULT;
-        td.BindFlags=D3D11_BIND_RENDER_TARGET;
-        com_ptr<ID3D11Texture2D> texture;
-        check_hresult(device->CreateTexture2D(&td,nullptr,texture.put()));
-        com_ptr<ID3D11VideoProcessorOutputView> out;
-        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{}; od.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
-        check_hresult(videoDevice->CreateVideoProcessorOutputView(texture.get(),enumerator.get(),&od,out.put()));
+        // A surface comes back to the pool only after the encoder has released
+        // the sample holding it, so a retained frame is never overwritten.
+        com_ptr<ID3D11Texture2D> texture=pool->take();
+        ID3D11VideoProcessorOutputView* out=nullptr;
+        if(texture) {
+            for(auto& o:outputs) if(o.first==texture.get()) { out=o.second.get(); break; }
+        } else {
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width=spec.width; td.Height=spec.height; td.MipLevels=td.ArraySize=1;
+            td.Format=DXGI_FORMAT_NV12; td.SampleDesc.Count=1; td.Usage=D3D11_USAGE_DEFAULT;
+            td.BindFlags=D3D11_BIND_RENDER_TARGET;
+            check_hresult(device->CreateTexture2D(&td,nullptr,texture.put()));
+        }
+        if(!out) {
+            com_ptr<ID3D11VideoProcessorOutputView> view;
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{}; od.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
+            check_hresult(videoDevice->CreateVideoProcessorOutputView(texture.get(),enumerator.get(),&od,view.put()));
+            out=view.get(); outputs.emplace_back(texture.get(),std::move(view)); // the view keeps the texture alive
+        }
         D3D11_VIDEO_PROCESSOR_STREAM stream{}; stream.Enable=TRUE; stream.pInputSurface=inputView.get();
-        check_hresult(videoContext->VideoProcessorBlt(processor.get(),out.get(),0,1,&stream));
-        return texture; // Each sample owns a distinct surface; encoder-retained frames cannot be overwritten.
+        check_hresult(videoContext->VideoProcessorBlt(processor.get(),out,0,1,&stream));
+        return texture;
+    }
+    // Wraps a converted surface in a sample. GPU samples are tracked so the
+    // surface returns to the pool when Media Foundation lets go of it; in
+    // software mode the pixels were already copied, so it returns at once.
+    com_ptr<IMFSample> sample(ID3D11Texture2D* texture, IMFMediaBuffer* data, bool gpu) {
+        com_ptr<IMFSample> result;
+        if(gpu) {
+            com_ptr<IMFTrackedSample> tracked;
+            check_hresult(MFCreateTrackedSample(tracked.put()));
+            result=tracked.as<IMFSample>();
+            check_hresult(result->AddBuffer(data));
+            check_hresult(tracked->SetAllocator(pool.get(),texture));
+        } else {
+            check_hresult(MFCreateSample(result.put()));
+            check_hresult(result->AddBuffer(data));
+            com_ptr<ID3D11Texture2D> reuse; reuse.copy_from(texture); pool->give(std::move(reuse));
+        }
+        return result;
     }
     com_ptr<IMFMediaBuffer> buffer(ID3D11Texture2D* texture, bool gpu) {
         com_ptr<IMFMediaBuffer> result;
@@ -334,8 +397,8 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
                 if(time-next>period) result->lateFrames+=uint64_t((time-next)/period);
                 if(pending) { encoder.write(pending.get(),time-pendingTime); duration=time; pending=nullptr; }
                 auto texture=g.convert(); auto buffer=g.buffer(texture.get(),encoder.gpu);
-                check_hresult(MFCreateSample(pending.put()));
-                check_hresult(pending->AddBuffer(buffer.get())); check_hresult(pending->SetSampleTime(time));
+                pending=g.sample(texture.get(),buffer.get(),encoder.gpu);
+                check_hresult(pending->SetSampleTime(time));
                 pendingTime=time; ++result->frames;
                 next=time+period;
             }
@@ -386,7 +449,7 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
     if(diagnostics && !result->file.empty()) {
         try {
             std::ofstream report(std::filesystem::path(result->file.wstring()+L".metrics.txt"));
-            report<<"Glimpse 0.3.0\nwidth="<<spec.width<<"\nheight="<<spec.height<<"\nfps_limit="<<spec.fps
+            report<<"Glimpse " GLIMPSE_VERSION_A "\nwidth="<<spec.width<<"\nheight="<<spec.height<<"\nfps_limit="<<spec.fps
                 <<"\nstart_latency_ms="<<result->startMs<<"\nduration_seconds="<<result->seconds
                 <<"\nsubmitted_frames="<<result->frames<<"\nlate_frame_intervals="<<result->lateFrames
                 <<"\nfile_bytes="<<result->bytes<<"\ngpu_input="<<result->gpuInput<<"\nquality_vbr_accepted="<<result->qualityVbr<<"\nh264_high_profile="<<result->highProfile
