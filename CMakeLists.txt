@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Glimpse VERSION 0.2.0 LANGUAGES CXX)
+project(Glimpse VERSION 0.3.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(CTest)
@@ -21,7 +21,7 @@ if(WIN32)
   target_compile_definitions(Glimpse PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
   target_compile_options(Glimpse PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
   set_property(TARGET Glimpse PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  target_link_libraries(Glimpse PRIVATE windowsapp d3d11 dxgi mfplat mfreadwrite mfuuid
+  target_link_libraries(Glimpse PRIVATE windowsapp d3d11 dxgi mfplat mfreadwrite mfuuid gdiplus
     ole32 oleaut32 uuid shell32 shlwapi comctl32 dwmapi uxtheme wtsapi32 user32 gdi32 advapi32)
   # Manifest is embedded by resources.rc; do not merge the linker's generated manifest.
   target_link_options(Glimpse PRIVATE /MANIFEST:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA)

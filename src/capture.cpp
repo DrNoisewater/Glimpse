@@ -156,9 +156,9 @@ struct Encoder {
     com_ptr<IMFSinkWriter> writer;
     com_ptr<IMFByteStream> stream;
     com_ptr<IMFDXGIDeviceManager> manager;
-    DWORD index{}; bool gpu{}, quality{};
-    void open(const std::filesystem::path& path, Graphics& g, bool useGpu, AudioRecorder& audio, bool withAudio) {
-        gpu=useGpu; quality=false;
+    DWORD index{}; bool gpu{}, quality{}, high{};
+    void open(const std::filesystem::path& path, Graphics& g, bool useGpu, bool highProfile, AudioRecorder& audio, bool withAudio) {
+        gpu=useGpu; quality=false; high=highProfile;
         // FAIL_IF_EXIST prevents touching any earlier capture, including a prior partial file.
         checked(MFCreateFile(MF_ACCESSMODE_READWRITE,MF_OPENMODE_FAIL_IF_EXIST,MF_FILEFLAGS_NONE,
             path.c_str(),stream.put()),L"Cannot create the recording. Check folder access and free space.");
@@ -176,7 +176,8 @@ struct Encoder {
         check_hresult(output->SetGUID(MF_MT_SUBTYPE,MFVideoFormat_H264));
         check_hresult(output->SetUINT32(MF_MT_AVG_BITRATE,g.spec.bitrate));
         check_hresult(output->SetUINT32(MF_MT_INTERLACE_MODE,MFVideoInterlace_Progressive));
-        check_hresult(output->SetUINT32(MF_MT_MPEG2_PROFILE,eAVEncH264VProfile_Main));
+        // High profile (8x8 transforms, CABAC on all encoders) is typically ~10% smaller than Main at equal quality.
+        check_hresult(output->SetUINT32(MF_MT_MPEG2_PROFILE,highProfile?eAVEncH264VProfile_High:eAVEncH264VProfile_Main));
         check_hresult(MFSetAttributeSize(output.get(),MF_MT_FRAME_SIZE,g.spec.width,g.spec.height));
         check_hresult(MFSetAttributeRatio(output.get(),MF_MT_FRAME_RATE,g.spec.fps,1));
         check_hresult(MFSetAttributeRatio(output.get(),MF_MT_PIXEL_ASPECT_RATIO,1,1));
@@ -199,6 +200,10 @@ struct Encoder {
                     codec->SetValue(&CODECAPI_AVEncCommonRateControlMode,&mode);
                 }
             }
+            // Screen recordings are mostly static: a keyframe every 4 s instead of the
+            // encoder default saves space while keeping seeking responsive. Optional.
+            VARIANT gop; VariantInit(&gop); gop.vt=VT_UI4; gop.ulVal=UINT(g.spec.fps*4);
+            codec->SetValue(&CODECAPI_AVEncMPVGOPSize,&gop);
         }
         audio.configure(writer.get(),withAudio);
         check_hresult(writer->BeginWriting());
@@ -221,7 +226,7 @@ static std::filesystem::path choosePath(const std::filesystem::path& folder) {
     }
     throw hresult_error(E_FAIL,L"Cannot find an unused capture filename.");
 }
-void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path folder, bool forceSoftware, unsigned initialAudio) noexcept {
+void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path folder, bool forceSoftware, unsigned initialAudio, bool diagnostics) noexcept {
     auto result=std::make_unique<CaptureResult>();
     bool apartment=false, mf=false, opened=false;
     const int64_t requested=ticks();
@@ -238,15 +243,21 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
         if(!GetDiskFreeSpaceExW(folder.c_str(),&free,nullptr,nullptr) || free.QuadPart<64*1024*1024)
             throw hresult_error(E_FAIL,L"At least 64 MB of free space is required to begin recording.");
         Graphics g(area,spec);
-        try { encoder.open(result->partial,g,!forceSoftware,audio,initialAudio!=AudioSilent); opened=true; }
-        catch(...) {
-            // Only remove a file that this attempt actually created, never a collision owned by someone else.
-            bool owned=bool(encoder.stream); encoder.close();
-            if(owned) DeleteFileW(result->partial.c_str());
-            if(forceSoftware || !owned) throw;
-            encoder.open(result->partial,g,false,audio,initialAudio!=AudioSilent); opened=true;
+        // Try GPU input + High profile first, then software, then the most compatible Main profile.
+        struct Attempt { bool gpu, high; };
+        std::vector<Attempt> attempts;
+        if(!forceSoftware) attempts.push_back({true,true});
+        attempts.push_back({false,true}); attempts.push_back({false,false});
+        for(size_t i=0;i<attempts.size() && !opened;++i) {
+            try { encoder.open(result->partial,g,attempts[i].gpu,attempts[i].high,audio,initialAudio!=AudioSilent); opened=true; }
+            catch(...) {
+                // Only remove a file that this attempt actually created, never a collision owned by someone else.
+                bool owned=bool(encoder.stream); encoder.close();
+                if(owned) DeleteFileW(result->partial.c_str());
+                if(!owned || i+1==attempts.size()) throw;
+            }
         }
-        result->gpuInput=encoder.gpu; result->qualityVbr=encoder.quality;
+        result->gpuInput=encoder.gpu; result->qualityVbr=encoder.quality; result->highProfile=encoder.high;
         std::vector<Monitor> monitors; EnumDisplayMonitors(nullptr,nullptr,enumerate,reinterpret_cast<LPARAM>(&monitors));
         std::vector<std::unique_ptr<Source>> sources;
         auto factory=get_activation_factory<GraphicsCaptureItem,IGraphicsCaptureItemInterop>();
@@ -371,14 +382,14 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
     const auto inferredTimestamps=audio.inferredTimestamps();
     pending=nullptr; audio.close(); encoder.close();
     if(mf) MFShutdown(); if(apartment) uninit_apartment();
-    // A local sidecar records observed timing; no data leaves this machine.
-    if(!result->file.empty()) {
+    // Optional local sidecar with observed timing for troubleshooting (Settings > diagnostics).
+    if(diagnostics && !result->file.empty()) {
         try {
             std::ofstream report(std::filesystem::path(result->file.wstring()+L".metrics.txt"));
-            report<<"Glimpse 0.2.0\nwidth="<<spec.width<<"\nheight="<<spec.height<<"\nfps_limit="<<spec.fps
+            report<<"Glimpse 0.3.0\nwidth="<<spec.width<<"\nheight="<<spec.height<<"\nfps_limit="<<spec.fps
                 <<"\nstart_latency_ms="<<result->startMs<<"\nduration_seconds="<<result->seconds
                 <<"\nsubmitted_frames="<<result->frames<<"\nlate_frame_intervals="<<result->lateFrames
-                <<"\nfile_bytes="<<result->bytes<<"\ngpu_input="<<result->gpuInput<<"\nquality_vbr_accepted="<<result->qualityVbr
+                <<"\nfile_bytes="<<result->bytes<<"\ngpu_input="<<result->gpuInput<<"\nquality_vbr_accepted="<<result->qualityVbr<<"\nh264_high_profile="<<result->highProfile
                 <<"\naudio_enabled="<<(initialAudio!=AudioSilent)<<"\naudio_dropped_frames="<<audio.dropped()<<"\naudio_discontinuities="<<audio.glitches()
                 <<"\naudio_bad_timestamps="<<audio.badTimestamps()<<"\naudio_timestamp_corrections="<<timestampCorrections
                 <<"\naudio_inferred_timestamps="<<inferredTimestamps<<"\naudio_mixed_overload_frames="<<audio.overloadedFrames()
@@ -391,9 +402,9 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
 }
 Recorder::~Recorder() { stop(true); join(); }
 void Recorder::join() { if(worker_.joinable()) worker_.join(); }
-void Recorder::start(HWND owner, Rect area, VideoSpec spec, const std::filesystem::path& folder, bool forceSoftware, unsigned audioMode) {
+void Recorder::start(HWND owner, Rect area, VideoSpec spec, const std::filesystem::path& folder, bool forceSoftware, unsigned audioMode, bool diagnostics) {
     join(); stop_=false; cancel_=false; pause_=false; elapsed_=0; audioMode_=audioMode; micLevel_=0; systemLevel_=0;
-    worker_=std::thread(&Recorder::run,this,owner,area,spec,folder,forceSoftware,audioMode);
+    worker_=std::thread(&Recorder::run,this,owner,area,spec,folder,forceSoftware,audioMode,diagnostics);
 }
 void Recorder::stop(bool discard) { if(discard) cancel_=true; stop_=true; cv_.notify_all(); }
 void Recorder::pause(bool value) { pause_=value; cv_.notify_all(); }

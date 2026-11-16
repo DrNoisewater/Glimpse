@@ -1,14 +1,13 @@
-# Glimpse 0.2.0
+# Glimpse 0.3.0
 
 A small, local Windows region recorder for Noisewater Labs. Native C++20 / Win32,
 Windows.Graphics.Capture, Direct3D 11 and Media Foundation. No browser runtime,
 FFmpeg download, account, server, telemetry or upload integration.
 
-**Delivery status: source implementation, not a validated Windows release.**
-The authoring environment was Linux without a Windows SDK or Windows runtime.
-There is **no compiled EXE in this archive**. The Windows source has not been
-compiled or run here. Portable policy tests passed; that does not validate the
-recorder. Build and run the Windows acceptance checklist before relying on it.
+**Status:** builds on Windows with `build-windows.cmd`. The 0.3.0 UI changes
+were syntax-checked with a MinGW cross-compiler and the portable tests pass,
+but they have not yet been run on Windows — build and try them before relying
+on this version.
 
 ## Build a portable executable
 
@@ -44,16 +43,21 @@ not been submitted or executed as part of this delivery.
 1. Launch Glimpse. It appears in the system tray, possibly inside the hidden
    icons menu. There is no persistent main window.
 2. Choose **Audio for next recording** in the tray menu if you want narration or system sound.
-3. Press **Ctrl+Shift+R**, drag a rectangle, and release: recording starts automatically.
+3. Press **Ctrl+Shift+R**. The screen freezes and dims, like Snipping Tool.
+   - **Drag** a rectangle and release: recording starts automatically. Hold
+     **Shift** while dragging for a square. Right-click cancels the drag.
+   - Or **click** a window (it highlights as you hover) or an empty part of the
+     desktop to record that whole window or screen.
 4. Press the shortcut again or click **Stop** to finalize the MP4.
 5. Paste into a destination that accepts file clipboard uploads, or hold and
    drag **Drag to share** from the saved-capture panel. **Open folder** selects
    the file in Explorer.
 
-A blinking red dot appears at the selected area’s top-right corner. A thin red
-border identifies the recording region. The controls attach near that corner and
-can be moved. Paused is amber; starting/saving is violet. These overlays are
-excluded from capture.
+A pulsing red dot appears at the selected area’s top-right corner and a thin
+border marks the recording region. A compact toolbar (status and timer, Pause,
+Stop, Discard, plus mute toggles, volume sliders and level meters when audio is
+on) sits just above or below the region and can be dragged anywhere. Paused is
+amber; starting/saving is violet. All of these are excluded from the recording.
 
 **Pause / Resume** excludes paused time. **Discard** discards the current
 recording; **Escape** cancels selection. Closing the recording toolbar saves
@@ -88,8 +92,8 @@ The narration and playback audio are mixed into the resulting MP4.
   paused intervals are removed. Missing loopback packets become silence.
 - Use headphones when recording microphone plus speaker playback to avoid
   acoustic echo. Echo cancellation and noise suppression are not implemented.
-- Saturation prevents numeric overflow, but two loud sources can still distort;
-  reduce levels if they reach the orange meter range. There is no mastering limiter.
+- A soft limiter smooths peaks when both sources are loud, but heavy overload
+  can still distort; reduce levels if the meters reach amber/red.
 - Muting releases that endpoint. Pause discards audio rather than saving it;
   an enabled microphone may still show Windows’ microphone-use indicator.
 - If a selected device cannot open or is disconnected, the app reports the
@@ -109,6 +113,10 @@ accessible under Recent Captures. This is an in-app toast, not an Action Center
 notification requiring packaged-app identity.
 
 ## Presets
+
+Video is H.264 **High** profile (falls back to Main if an encoder refuses it)
+with a keyframe every 4 seconds, which suits mostly-static screen content and
+keeps files small.
 
 | Preset | Output ceiling, landscape / portrait | FPS ceiling | Requested codec quality |
 |---|---|---:|---:|
@@ -132,7 +140,9 @@ runtime scene classifier or dynamic resolution changes are implemented.
 - An optional sign-in entry is written only to the current user's Run key.
   No administrator privileges are requested. Disable this setting before
   deleting or moving the portable EXE.
-- Each recording has a `.mp4.metrics.txt` sidecar with local measurements.
+- Only the `.mp4` is saved by default. Turning on **Save a diagnostics file**
+  in Settings also writes a `.mp4.metrics.txt` sidecar with timing and audio
+  counters. It is for troubleshooting only, and nothing needs it to play or share the video.
 - Capture writes to `.mp4.partial`, then finalizes and renames without replacing
   an existing video. The app never automatically cleans up older recordings.
 - Failed finalization retains the partial file and shows its path. Some partial
@@ -164,10 +174,10 @@ runtime scene classifier or dynamic resolution changes are implemented.
   readable error; choose software mode before retrying.
 - Each submitted frame owns its own NV12 texture, avoiding premature reuse by
   an asynchronous encoder. A reusable surface pool is a future optimization.
-- Theme is read at launch. Rounded controls, custom-colored native sliders,
-  Segoe UI Variable Text on Windows 11 (Segoe UI on Windows 10), and a native
-  save toast share one visual system. Combo boxes and hotkey controls retain
-  Windows styling. Visual layout/accessibility still require Windows verification.
+- Theme (light/dark) is read at launch. Panels use anti-aliased GDI+ drawing,
+  Segoe Fluent Icons / Segoe MDL2 Assets glyphs, native rounded corners on
+  Windows 11 and a region fallback on Windows 10. The hotkey control keeps
+  Windows styling.
 
 See `docs/TESTING.md`, `docs/PERFORMANCE.md` and `docs/ARCHITECTURE.md`.
 
@@ -193,7 +203,8 @@ recording before testing the mixed mode. A USB mic that sounds fine in OBS
 should not require buying new audio hardware to work with Glimpse. Keep the mic
 gain below 100% if the recorded audio reaches full scale during speech.
 
-After each recording, open `Capture_...mp4.metrics.txt` beside the video:
+Turn on **Save a diagnostics file** in Settings, record again, then open
+`Capture_...mp4.metrics.txt` beside the video:
 
 - `audio_dropped_frames`: audio packets fell outside the staging window,
   often because they arrived after the MP4 writing deadline; nonzero values

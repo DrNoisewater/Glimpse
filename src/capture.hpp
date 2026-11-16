@@ -17,7 +17,7 @@ struct CaptureResult {
     std::wstring error;
     double seconds{}, startMs{};
     uint64_t frames{}, lateFrames{}, bytes{};
-    bool cancelled{}, gpuInput{}, qualityVbr{};
+    bool cancelled{}, gpuInput{}, qualityVbr{}, highProfile{};
 };
 class Recorder {
     std::thread worker_;
@@ -28,10 +28,10 @@ class Recorder {
     std::atomic<unsigned> audioMode_{};
     std::atomic<float> micGain_{1.f}, systemGain_{.65f};
     std::atomic<float> micLevel_{},systemLevel_{};
-    void run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path folder, bool forceSoftware, unsigned audioMode) noexcept;
+    void run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path folder, bool forceSoftware, unsigned audioMode, bool diagnostics) noexcept;
 public:
     ~Recorder();
-    void start(HWND owner, Rect area, VideoSpec spec, const std::filesystem::path& folder, bool forceSoftware, unsigned audioMode);
+    void start(HWND owner, Rect area, VideoSpec spec, const std::filesystem::path& folder, bool forceSoftware, unsigned audioMode, bool diagnostics = false);
     void stop(bool discard = false);
     void pause(bool value);
     void audio(unsigned mode) { audioMode_=mode; }

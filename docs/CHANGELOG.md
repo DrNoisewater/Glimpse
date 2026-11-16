@@ -1,3 +1,20 @@
+# Glimpse 0.3.0
+
+- Selection overlay rewritten: frozen, dimmed desktop with the selected area
+  shown at full brightness, an accent outline with corner handles and a size
+  label. Double-buffered and only changed areas are repainted, so the old
+  flicker (full-screen layered window + region rebuilt on every mouse move) is gone.
+- Click a window or the desktop to record that window or whole screen; Shift
+  while dragging for a square; right-click cancels a drag.
+- New compact recording toolbar with icon buttons (Pause/Resume, Stop, Discard),
+  hover states, smooth 20 Hz level meters and a pulsing status dot. The audio row
+  only appears when audio is enabled.
+- Anti-aliased pulsing recording dot; region border no longer repaints every 250 ms.
+- Refreshed save toast, settings (dark-mode fields), tray menu shows the shortcut.
+- New app/tray icon (smooth edges, sizes 16–256).
+- `.mp4.metrics.txt` diagnostics sidecar is now opt-in (Settings), off by default.
+- H.264 High profile with Main fallback and a 4-second keyframe interval for smaller files.
+
 # Glimpse 0.2.0 — source update
 
 - Drag-release starts recording automatically; no confirmation click.
