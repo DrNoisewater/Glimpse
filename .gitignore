@@ -1,0 +1,7 @@
+build/
+build-*/
+portable/
+*.zip
+*.user
+.vs/
+build.log

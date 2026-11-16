@@ -1,0 +1,20 @@
+Glimpse build correction -- 2026-11-16
+
+Fixed: src/audio.hpp now includes mfidl.h before mfreadwrite.h.
+Cause: src/capture.cpp and src/audio.cpp both include audio.hpp first.
+The original audio.hpp used mfreadwrite.h before defining IMFMediaSource
+and IMFMediaSink interfaces in mfidl.h. The Windows SDK compiler then
+produced a long cascade of C2065/C2275 errors.
+
+The build-windows.cmd file now keeps its command window open, saves
+build.log, builds, runs CTest, and creates the portable app package.
+
+To build on Windows:
+1. Extract the ENTIRE source ZIP.
+2. Open the Glimpse folder.
+3. Double-click build-windows.cmd.
+4. On success, open portable/Glimpse.exe.
+
+This source was patched and portable tests were executed outside Windows.
+The Windows executable itself was not built or tested in this environment.
+If a new compiler error arises, send the new build.log.
