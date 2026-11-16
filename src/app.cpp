@@ -144,9 +144,12 @@ void themeWindow(HWND w) {
     MARGINS shadow{1,1,1,1}; DwmExtendFrameIntoClientArea(w,&shadow);
 }
 void darkControl(HWND c) { if(dark) SetWindowTheme(c,L"DarkMode_CFD",nullptr); }
-void exclude(HWND w) {
-    if(!SetWindowDisplayAffinity(w,0x00000011))
-        throw winrt::hresult_error(HRESULT_FROM_WIN32(GetLastError()),L"Windows could not exclude the recorder controls from capture.");
+bool tryExclude(HWND w) { return SetWindowDisplayAffinity(w,0x00000011)!=FALSE; } // WDA_EXCLUDEFROMCAPTURE
+void exclude(HWND w,const wchar_t* what) {
+    if(tryExclude(w)) return;
+    DWORD code=GetLastError();
+    auto message=std::wstring(L"Windows could not hide the ")+what+L" from the recording (error "+std::to_wstring(code)+L").";
+    throw winrt::hresult_error(HRESULT_FROM_WIN32(code),message.c_str());
 }
 std::wstring hotkeyText(WORD key) {
     std::wstring s; BYTE flags=HIBYTE(key);
@@ -459,7 +462,7 @@ void makeFrame() {
     HRGN ring=CreateRectRgn(0,0,width,height),hole=CreateRectRgn(thick,thick,width-thick,height-thick);
     CombineRgn(ring,ring,hole,RGN_DIFF); DeleteObject(hole);
     if(!SetWindowRgn(recordingFrame,ring,FALSE)) DeleteObject(ring);
-    SetLayeredWindowAttributes(recordingFrame,0,235,LWA_ALPHA); exclude(recordingFrame);
+    SetLayeredWindowAttributes(recordingFrame,0,235,LWA_ALPHA); exclude(recordingFrame,L"recording border");
     ShowWindow(recordingFrame,SW_SHOWNOACTIVATE);
     if(area.width()>=96&&area.height()>=96) {
         recordingDot=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_TOOLWINDOW,
@@ -467,7 +470,12 @@ void makeFrame() {
         if(!recordingDot) winrt::throw_last_error();
         int size=scale(recordingDot,30),inset=scale(recordingDot,10);
         SetWindowPos(recordingDot,HWND_TOPMOST,area.right-inset-size,area.top+inset,size,size,SWP_NOACTIVATE);
-        exclude(recordingDot); updateDot(); ShowWindow(recordingDot,SW_SHOWNOACTIVATE);
+        // Give the layered window its first frame before asking Windows to hide it from
+        // capture. The dot is optional: if it can't be hidden, drop it rather than fail,
+        // because it sits inside the recorded area. The toolbar still shows the status.
+        updateDot();
+        if(tryExclude(recordingDot)) ShowWindow(recordingDot,SW_SHOWNOACTIVATE);
+        else { DestroyWindow(recordingDot); recordingDot=nullptr; }
     }
 }
 void positionPopup(HWND w,HMONITOR monitor,int preferredX,int preferredY,int width,int height) {
@@ -517,7 +525,7 @@ void startRecording() {
         liveAudio=config.audio; audioArmed=liveAudio!=AudioSilent;
         liveMicVolume=config.micVolume; liveSystemVolume=config.systemVolume;
         statusOverride.clear(); animationStart=GetTickCount64();
-        makeToolbar(); exclude(toolbar);
+        makeToolbar(); exclude(toolbar,L"recording toolbar");
         if(overlay) { DestroyWindow(overlay); overlay=nullptr; }
         state=State::Starting; makeFrame(); audioControls();
         recorder.start(mainWindow,area,spec,config.folder,config.software,liveAudio,config.diagnostics);

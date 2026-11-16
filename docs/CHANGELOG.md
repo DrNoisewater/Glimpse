@@ -1,3 +1,11 @@
+# Glimpse 0.3.1
+
+- Fixed "Windows could not exclude the recorder controls from capture" right
+  after selecting a region. The new recording dot asked Windows to hide it before
+  it had drawn anything; it now draws first, and if Windows still refuses, the
+  dot is skipped instead of stopping the recording.
+- That error message now names the window and the Windows error code.
+
 # Glimpse 0.3.0
 
 - Selection overlay rewritten: frozen, dimmed desktop with the selected area

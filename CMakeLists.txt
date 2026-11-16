@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 # The one place the version lives. The Release workflow checks it matches the
 # version you type when publishing, and it flows into the EXE, installer and app.
-project(Glimpse VERSION 0.3.0 DESCRIPTION "Instant screen recorder" LANGUAGES CXX)
+project(Glimpse VERSION 0.3.1 DESCRIPTION "Instant screen recorder" LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
