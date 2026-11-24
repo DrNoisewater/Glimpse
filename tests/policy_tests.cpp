@@ -64,6 +64,11 @@ int main() {
         const std::string noDigest=R"({"assets":[{"name":"Glimpse-Setup-0.4.0.exe","browser_download_url":"y"},{"name":"b","digest":"sha256:)"+hex+R"("}]})";
         expect(!assetSha256(noDigest,"Glimpse-Setup-0.4.0.exe"),"another asset's digest is never borrowed");
         expect(!assetSha256(R"({"name":"Glimpse-Setup-0.4.0.exe","digest":"sha256:abc","browser_download_url":"y"})","Glimpse-Setup-0.4.0.exe"),"short digest rejected");
+        // GitHub may order fields differently: digest after the download URL and nested uploader.
+        const std::string reordered=R"({"tag_name":"v0.4.0","body":"Download {Glimpse-Setup-0.4.0.exe} \"x\"","assets":[{"name":"Glimpse-0.4.0-portable.zip","browser_download_url":"z","digest":"sha256:)"+std::string(64,'b')+
+            R"("},{"name":"Glimpse-Setup-0.4.0.exe","browser_download_url":"y","uploader":{"login":"x","html_url":"{"},"node_id":"n","digest":"sha256:)"+hex+R"("}]})";
+        expect(assetSha256(reordered,"Glimpse-Setup-0.4.0.exe")==hex,"digest found in any field order");
+        expect(assetSha256(reordered,"Glimpse-0.4.0-portable.zip")==std::string(64,'b'),"reordered assets keep their own digests");
     }
     std::cout<<checks<<" policy checks passed\n";
 }

@@ -1,3 +1,10 @@
+# Glimpse 0.3.3
+
+- Glimpse now checks for updates by itself 15 seconds after it starts. If a
+  newer version exists, a tray notification offers it (click to install) and the
+  tray menu shows **Install Glimpse x.y.z…**. Nothing is shown when you're up to
+  date or offline, and no notification appears during a recording.
+
 # Glimpse 0.3.2
 
 - New **Check for updates…** item in the tray menu. If a newer release exists,

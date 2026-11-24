@@ -75,7 +75,9 @@ has already been encoded.
 Right-click the tray icon for New Recording, Recent Captures (last ten), Open
 Captures Folder, Settings, Check for updates, or Exit. Clicking a recent capture opens its share
 panel. **Check for updates** asks GitHub for the latest release (sending only a
-"Glimpse/version" user agent). If it's newer, click **Yes** to install it: Glimpse
+"Glimpse/version" user agent). Glimpse also does this quietly 15 seconds after it
+starts and only speaks up, with a clickable tray notification, when there's a
+newer version. If it's newer, click **Yes** to install it: Glimpse
 downloads the installer, checks it against the SHA-256 checksum GitHub publishes
 for it, closes, updates silently and reopens, keeping your settings. If a recording
 is running, the update waits and the menu shows **Install update** for afterwards. The
