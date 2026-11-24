@@ -192,6 +192,114 @@ struct AudioRecorder::Endpoint {
     }
 };
 
+// ---------- TEMPORARY: Stagehand's sound over its pipe (stagehand_feed.hpp) ----------
+static constexpr wchar_t StagehandPipe[]=L"\\\\.\\pipe\\stagehand-sound";
+
+bool stagehandOffersSound() {
+    // Doesn't connect: only asks whether Stagehand's pipe exists (busy still counts).
+    if(WaitNamedPipeW(StagehandPipe,1)) return true;
+    const DWORD e=GetLastError();
+    return e!=ERROR_FILE_NOT_FOUND && e!=ERROR_PATH_NOT_FOUND && e!=ERROR_BAD_PATHNAME;
+}
+
+struct AudioRecorder::StagehandLine {
+    AudioRecorder& owner;
+    HANDLE pipe;
+    const int64_t connectedAt;
+    std::atomic<bool> stop_{false},closed_{false},everData_{false};
+    std::atomic<int64_t> lastPacket_{0};
+    std::atomic<float> packetPeak_{0};
+    std::thread worker_;
+    StagehandLine(AudioRecorder& recorder,HANDLE h):owner(recorder),pipe(h),connectedAt(qpcTicks()) {
+        worker_=std::thread([this] { run(); });
+    }
+    ~StagehandLine() {
+        stop_=true;
+        if(worker_.joinable()) worker_.join();
+        CloseHandle(pipe);
+    }
+    static std::unique_ptr<StagehandLine> open(AudioRecorder& recorder) {
+        HANDLE h=CreateFileW(StagehandPipe,GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+        if(h==INVALID_HANDLE_VALUE) return nullptr;
+        return std::make_unique<StagehandLine>(recorder,h);
+    }
+    bool closed() const { return closed_.load(); }
+    // Whether Stagehand's sound is (or is about to be) recorded instead of system audio.
+    // A short grace after connecting lets Stagehand's engine start sending; if nothing
+    // comes (its engine isn't running), system audio takes over, and it hands back
+    // the moment Stagehand's sound starts.
+    bool carrying(int64_t now) const {
+        if(closed()) return false;
+        if(now-connectedAt<15000000) return true; // 1.5 s
+        const int64_t last=lastPacket_.load();
+        return last && now-last<(everData_.load()?50000000:15000000);
+    }
+    float takePeak() { return packetPeak_.exchange(0,std::memory_order_relaxed); }
+    void run() noexcept {
+        try {
+            SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);
+            StagehandPacketReader reader;
+            StagehandResampler resampler;
+            StagehandFeedClock clock;
+            std::vector<uint8_t> buf(65536);
+            std::vector<float> out;
+            uint64_t lastEpoch=0;
+            int64_t writtenEnd=0;
+            while(!stop_.load(std::memory_order_relaxed)) {
+                DWORD avail=0;
+                if(!PeekNamedPipe(pipe,nullptr,0,nullptr,&avail,nullptr)) break; // Stagehand closed
+                if(!avail) { std::this_thread::sleep_for(std::chrono::milliseconds(3)); continue; }
+                DWORD got=0;
+                if(!ReadFile(pipe,buf.data(),std::min<DWORD>(avail,DWORD(buf.size())),&got,nullptr)) break;
+                const int64_t arrived=qpcTicks();
+                reader.push(buf.data(),got,[&](const StagehandPacketReader::Packet& p) {
+                    lastPacket_=arrived; everData_=true;
+                    Mapping map;
+                    {
+                        std::lock_guard lock(owner.mappingMutex_);
+                        map=owner.mapping_;
+                    }
+                    if(map.epoch!=lastEpoch) { clock.reset(); writtenEnd=0; lastEpoch=map.epoch; }
+                    out.clear();
+                    resampler.process(p.rate,p.samples.data(),p.samples.size()/2,out);
+                    if(!map.active) { clock.reset(); return; }
+                    const int64_t frames=int64_t(out.size()/2);
+                    if(!frames) return;
+                    const int64_t first=clock.place(audioNearestFrame(map.anchorTime+arrived-map.anchorQpc),frames);
+                    const int64_t floorFrame=audioFrameAt(map.anchorTime);
+                    const float gain=std::clamp(owner.systemGain_.load(std::memory_order_relaxed),0.f,2.f);
+                    float peak=0;
+                    {
+                        std::lock_guard lock(owner.ringMutex_);
+                        for(int64_t i=0;i<frames;++i) {
+                            const int64_t frame=first+i;
+                            // never add the same moment twice (after a jump back)
+                            if(frame<floorFrame || frame<writtenEnd) continue;
+                            const float left=out[size_t(i)*2]*gain,right=out[size_t(i)*2+1]*gain;
+                            peak=std::max({peak,std::abs(left),std::abs(right)});
+                            owner.ring_.add(frame,left,right);
+                        }
+                    }
+                    writtenEnd=std::max(writtenEnd,first+frames);
+                    float previous=packetPeak_.load(std::memory_order_relaxed);
+                    while(peak>previous && !packetPeak_.compare_exchange_weak(previous,peak,std::memory_order_relaxed)) {}
+                });
+                if(reader.broken()) break;
+            }
+        } catch(...) {}
+        closed_=true;
+    }
+};
+
+void AudioRecorder::keepStagehand(bool wanted,int64_t now) {
+    if(!wanted) { stagehand_.reset(); return; }
+    if(stagehand_ && stagehand_->closed()) stagehand_.reset();
+    if(!stagehand_ && now>=stagehandRetryAt_) {
+        stagehandRetryAt_=now+20000000; // look again in 2 s
+        stagehand_=StagehandLine::open(*this);
+    }
+}
+
 AudioRecorder::AudioRecorder()=default;
 AudioRecorder::~AudioRecorder() { close(); }
 
@@ -200,6 +308,7 @@ void AudioRecorder::close() {
     // modified after close returns, before the final MP4 audio flush.
     mic_.reset();
     system_.reset();
+    stagehand_.reset();
 }
 
 void AudioRecorder::configure(IMFSinkWriter* writer,bool enabled) {
@@ -243,10 +352,18 @@ void AudioRecorder::collect(unsigned mode,const Timeline* timeline,int64_t activ
             mapping_.anchorTime=timeline->at(activeFrom);
         }
     }
+    const int64_t now=qpcTicks();
+    keepStagehand(mode&AudioSystem,now);
+    const bool viaStagehand=stagehand_ && stagehand_->carrying(now);
+    if(viaStagehand && !stagehandTold_ && stagehand_->everData_.load()) {
+        stagehandTold_=true;
+        notices_.push_back(L"Stagehand is open: its sound is being recorded.");
+    }
     keep(mic_,micHealth_,false,mode&AudioMic);
-    keep(system_,systemHealth_,true,mode&AudioSystem);
+    keep(system_,systemHealth_,true,(mode&AudioSystem) && !viaStagehand);
     micLevel_=(mode&AudioMic && mic_)?std::max(micLevel_*.85f,mic_->takePeak()):0.f;
-    systemLevel_=(mode&AudioSystem && system_)?std::max(systemLevel_*.85f,system_->takePeak()):0.f;
+    const float systemPeak=viaStagehand?stagehand_->takePeak():system_?system_->takePeak():0.f;
+    systemLevel_=(mode&AudioSystem)?std::max(systemLevel_*.85f,systemPeak):0.f;
 }
 
 void AudioRecorder::keep(std::unique_ptr<Endpoint>& endpoint,AudioSourceHealth& health,bool system,bool wanted) {

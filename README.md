@@ -1,4 +1,4 @@
-# Glimpse 0.3.0
+# Glimpse 0.4.0
 
 A small, local Windows region recorder for Noisewater Labs. Native C++20 / Win32,
 Windows.Graphics.Capture, Direct3D 11 and Media Foundation. No browser runtime,
@@ -122,6 +122,11 @@ The narration and playback audio are mixed into the resulting MP4.
   exclusive control of this device*. A different microphone also works if the app
   only holds one device. Device hot-swapping and a dedicated device picker are
   not implemented; choose defaults in Windows.
+- **Stagehand** (temporary): whenever Stagehand 4.32.0+ is open, Glimpse records
+  Stagehand's own sound straight from it, even when audio is set to Silent, since
+  Stagehand holds the speakers exclusively and system audio would be silent. The
+  System sound button, slider and meter control it. If Stagehand's sound engine
+  isn't running, ordinary system audio is used instead.
 - This records narration **while capturing**. It is not an editor for adding
   voiceover to an existing video file afterward.
 

@@ -533,7 +533,10 @@ void startRecording() {
     if(state!=State::Ready) return;
     try {
         auto spec=videoSpec(area.width(),area.height(),config.preset,config.fps);
-        liveAudio=config.audio; audioArmed=liveAudio!=AudioSilent;
+        liveAudio=config.audio;
+        // TEMPORARY: with Stagehand open, its sound is always recorded, whatever the audio setting
+        if(stagehandOffersSound()) liveAudio|=AudioSystem;
+        audioArmed=liveAudio!=AudioSilent;
         liveMicVolume=config.micVolume; liveSystemVolume=config.systemVolume;
         statusOverride.clear(); animationStart=GetTickCount64();
         makeToolbar(); exclude(toolbar,L"recording toolbar");

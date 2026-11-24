@@ -1,5 +1,6 @@
 #pragma once
 #include "audio_policy.hpp"
+#include "stagehand_feed.hpp"
 #include "policy.hpp"
 #include <windows.h>
 #include <audioclient.h>
@@ -30,6 +31,12 @@ class AudioRecorder {
         bool active{};
     };
     std::unique_ptr<Endpoint> mic_,system_;
+    // TEMPORARY: Stagehand's own sound, used in place of system audio while it comes.
+    struct StagehandLine;
+    friend struct StagehandLine;
+    std::unique_ptr<StagehandLine> stagehand_;
+    int64_t stagehandRetryAt_{};
+    bool stagehandTold_{};
     // A source that cannot be opened (e.g. another app holds the microphone in
     // exclusive mode) never stops the recording: it is recorded as silence,
     // retried every couple of seconds, and reported through takeNotices().
@@ -44,6 +51,7 @@ class AudioRecorder {
     std::atomic<uint64_t> discontinuities_{}, badTimestamps_{}, timestampCorrections_{}, inferredTimestamps_{};
     float micLevel_{},systemLevel_{};
     std::atomic<float> micGain_{1.f},systemGain_{.65f};
+    void keepStagehand(bool wanted,int64_t now);
 public:
     AudioRecorder();
     ~AudioRecorder();
