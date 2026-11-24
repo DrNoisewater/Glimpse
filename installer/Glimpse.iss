@@ -61,7 +61,15 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\Glimpse.exe"; Description: "Start Glimpse now"; Flags: nowait postinstall skipifsilent
+; In-app updates run Setup with /VERYSILENT /RELAUNCH=1 after Glimpse exits; reopen it when done.
+Filename: "{app}\Glimpse.exe"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [UninstallDelete]
 ; Settings only. Recordings in Videos\Glimpse are never touched.
 Type: filesandordirs; Name: "{localappdata}\Glimpse"
+
+[Code]
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;

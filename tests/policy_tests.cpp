@@ -2,6 +2,7 @@
 #include "update_policy.hpp"
 #include <cstdlib>
 #include <iostream>
+#include <string>
 using namespace glimpse;
 int checks=0;
 void expect(bool condition,const char* label) {
@@ -51,5 +52,18 @@ int main() {
     expect(versionText(Version{1,0,12})=="1.0.12","version text");
     expect(releaseTag(R"({"url":"x","tag_name" : "v0.4.0","name":"Glimpse v0.4.0"})")==std::string("v0.4.0"),"tag read from release JSON");
     expect(!releaseTag(R"({"message":"Not Found"})"),"missing release has no tag");
+    expect(installerName(Version{0,4,0})=="Glimpse-Setup-0.4.0.exe","installer asset name");
+    {
+        const std::string hex(64,'a'), HEX(64,'A');
+        const std::string json=R"({"tag_name":"v0.4.0","assets":[{"name":"Glimpse-0.4.0-portable.zip","digest":"sha256:)"+std::string(64,'b')+
+            R"(","browser_download_url":"z"},{"name":"Glimpse-Setup-0.4.0.exe","uploader":{"login":"x"},"digest":"sha256:)"+HEX+
+            R"(","browser_download_url":"y"}]})";
+        expect(assetSha256(json,"Glimpse-Setup-0.4.0.exe")==hex,"installer digest is read from its own asset, lowercased");
+        expect(assetSha256(json,"Glimpse-0.4.0-portable.zip")==std::string(64,'b'),"each asset keeps its own digest");
+        expect(!assetSha256(json,"Glimpse-Setup-0.5.0.exe"),"missing asset has no digest");
+        const std::string noDigest=R"({"assets":[{"name":"Glimpse-Setup-0.4.0.exe","browser_download_url":"y"},{"name":"b","digest":"sha256:)"+hex+R"("}]})";
+        expect(!assetSha256(noDigest,"Glimpse-Setup-0.4.0.exe"),"another asset's digest is never borrowed");
+        expect(!assetSha256(R"({"name":"Glimpse-Setup-0.4.0.exe","digest":"sha256:abc","browser_download_url":"y"})","Glimpse-Setup-0.4.0.exe"),"short digest rejected");
+    }
     std::cout<<checks<<" policy checks passed\n";
 }

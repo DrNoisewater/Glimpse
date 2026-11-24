@@ -1,8 +1,10 @@
 # Glimpse 0.3.2
 
-- New **Check for updates…** item in the tray menu. It asks GitHub for the
-  latest release and, if it's newer, offers to open its download page; it also
-  tells you when you're already up to date or the check couldn't connect.
+- New **Check for updates…** item in the tray menu. If a newer release exists,
+  one click installs it: Glimpse downloads the installer, verifies its SHA-256
+  checksum against GitHub's, closes, updates silently and reopens. The portable
+  zip opens the download page instead. It also tells you when you're up to date
+  or the check couldn't connect.
 
 - A microphone or sound output that another app holds in exclusive mode (or
   that is blocked, missing or unplugged) no longer stops the recording. Glimpse

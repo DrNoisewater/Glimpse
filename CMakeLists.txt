@@ -37,7 +37,7 @@ target_compile_options(Glimpse PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplus
 # Static CRT: the EXE runs on a clean Windows 10/11 install with nothing else to install.
 set_property(TARGET Glimpse PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(Glimpse PRIVATE windowsapp d3d11 dxgi mfplat mfreadwrite mfuuid gdiplus
-  ole32 oleaut32 uuid shell32 shlwapi comctl32 dwmapi uxtheme wtsapi32 winhttp user32 gdi32 advapi32)
+  ole32 oleaut32 uuid shell32 shlwapi comctl32 dwmapi uxtheme wtsapi32 winhttp bcrypt user32 gdi32 advapi32)
 # The manifest is embedded by resources.rc; do not merge the linker's generated one.
 target_link_options(Glimpse PRIVATE /MANIFEST:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA)
 

@@ -75,7 +75,11 @@ has already been encoded.
 Right-click the tray icon for New Recording, Recent Captures (last ten), Open
 Captures Folder, Settings, Check for updates, or Exit. Clicking a recent capture opens its share
 panel. **Check for updates** asks GitHub for the latest release (sending only a
-"Glimpse/version" user agent) and offers to open its download page if it's newer. Settings offers the shortcut, folder, quality, frame-rate ceiling,
+"Glimpse/version" user agent). If it's newer, click **Yes** to install it: Glimpse
+downloads the installer, checks it against the SHA-256 checksum GitHub publishes
+for it, closes, updates silently and reopens, keeping your settings. If a recording
+is running, the update waits and the menu shows **Install update** for afterwards. The
+portable zip can't update itself, so it opens the download page instead. Settings offers the shortcut, folder, quality, frame-rate ceiling,
 opt-in sign-in startup, audio defaults and software-encoding compatibility mode.
 
 ## Narration, mixing and volume

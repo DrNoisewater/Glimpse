@@ -10,11 +10,13 @@
 #include <uxtheme.h>
 #include <wtsapi32.h>
 #include <winhttp.h>
+#include <bcrypt.h>
 #include <winrt/base.h>
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <vector>
+#include <fstream>
 #include <sstream>
 #include <thread>
 // GDI+ is used only for anti-aliased shapes; it expects min/max in its namespace.
@@ -27,6 +29,7 @@ namespace gp=Gdiplus;
 namespace {
 constexpr UINT TrayMessage=WM_APP+1, New=100, Recent=101, Folder=102, Settings=103, Exit=104, CheckUpdates=105;
 constexpr UINT WM_UPDATE_RESULT=WM_APP+13; // lParam: heap UpdateResult* the receiver deletes
+constexpr UINT WM_UPDATE_DOWNLOADED=WM_APP+14; // lParam: heap DownloadResult* the receiver deletes
 constexpr UINT Record=200, Pause=201, Cancel=202, Copy=203, Reveal=204, Drag=205;
 constexpr UINT Mic=206, SystemAudio=207, Dismiss=208, MicVolume=210, SystemVolume=211;
 constexpr UINT AudioMenuBase=400, ToastTimer=4;
@@ -897,70 +900,189 @@ void browseFolder() {
         if(SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))) { SetDlgItemTextW(settingsWindow,310,path); CoTaskMemFree(path); }
     }
 }
-// ---------- update check ----------
+// ---------- update check and install ----------
+// Check: GET api.github.com/repos/DrNoisewater/Glimpse/releases/latest (only a
+// generic "Glimpse/<version>" User-Agent is sent). Install: download that release's
+// Glimpse-Setup-x.y.z.exe over HTTPS, verify it against the SHA-256 GitHub publishes
+// for the asset, then exit, release the single-instance mutex and run it silently.
+// The installer reopens Glimpse (see /RELAUNCH in installer/Glimpse.iss).
 constexpr wchar_t ReleasesPage[]=L"https://github.com/DrNoisewater/Glimpse/releases";
-struct UpdateResult { enum Kind { Failed, Current, Available } kind{Failed}; std::wstring version, detail; };
-bool checkingUpdates{};
+constexpr wchar_t InstallerAppId[]=L"{8F3C2B1A-5D47-4E8B-9A61-3C7E2D9F4B10}_is1"; // installer/Glimpse.iss AppId
+struct UpdateResult { enum Kind { Failed, Current, Available } kind{Failed}; std::wstring version, detail; std::string sha256; };
+struct DownloadResult { std::wstring version; fs::path file; std::wstring detail; };
+enum class UpdateStep { Idle, Checking, Downloading } updateStep{};
+std::wstring readyVersion; fs::path readyInstaller, installOnExit;
 std::wstring widen(const std::string& s) { return std::wstring(s.begin(),s.end()); } // ASCII only
-// GET https://api.github.com/repos/DrNoisewater/Glimpse/releases/latest. Sends only a
-// generic product User-Agent (GitHub requires one); nothing about the user.
+
+struct WinHttp {
+    static void close(HINTERNET h) { if(h) WinHttpCloseHandle(h); }
+    std::unique_ptr<void,decltype(&close)> session{nullptr,&close}, connection{nullptr,&close}, request{nullptr,&close};
+    std::wstring problem;
+    // HTTPS GET; redirects are followed (WinHTTP never downgrades HTTPS to HTTP).
+    bool get(const wchar_t* host,const std::wstring& path,const wchar_t* headers) {
+        session.reset(WinHttpOpen(L"Glimpse/" GLIMPSE_VERSION,WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0));
+        if(!session) { problem=L"Windows couldn't start a web connection."; return false; }
+        WinHttpSetTimeouts(session.get(),10000,10000,15000,30000);
+        connection.reset(WinHttpConnect(session.get(),host,INTERNET_DEFAULT_HTTPS_PORT,0));
+        if(connection) request.reset(WinHttpOpenRequest(connection.get(),L"GET",path.c_str(),nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE));
+        if(!request || !WinHttpSendRequest(request.get(),headers,headers?DWORD(-1):0,WINHTTP_NO_REQUEST_DATA,0,0,0)
+            || !WinHttpReceiveResponse(request.get(),nullptr)) {
+            problem=L"GitHub couldn't be reached (error "+std::to_wstring(GetLastError())+L"). Check your internet connection.";
+            return false;
+        }
+        DWORD status=0, size=sizeof(status);
+        WinHttpQueryHeaders(request.get(),WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX);
+        if(status!=200) { problem=L"GitHub answered with status "+std::to_wstring(status)+L"."; return false; }
+        return true;
+    }
+    // Streams the body to `sink`; false on a read error or when it passes `limit` bytes.
+    template<class Sink> bool read(size_t limit,Sink&& sink) {
+        size_t total=0;
+        std::vector<char> chunk(65536);
+        for(;;) {
+            DWORD read=0;
+            if(!WinHttpReadData(request.get(),chunk.data(),DWORD(chunk.size()),&read)) { problem=L"The download was interrupted."; return false; }
+            if(!read) return true;
+            if((total+=read)>limit) { problem=L"The download was larger than expected."; return false; }
+            if(!sink(chunk.data(),read)) return false;
+        }
+    }
+};
+
 UpdateResult fetchLatestRelease() {
     UpdateResult result;
-    auto close=[](HINTERNET h) { if(h) WinHttpCloseHandle(h); };
-    std::unique_ptr<void,decltype(close)> session(WinHttpOpen(L"Glimpse/" GLIMPSE_VERSION,WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0),close);
-    if(!session) { result.detail=L"Windows couldn't start a web connection."; return result; }
-    WinHttpSetTimeouts(session.get(),10000,10000,10000,15000);
-    std::unique_ptr<void,decltype(close)> connection(WinHttpConnect(session.get(),L"api.github.com",INTERNET_DEFAULT_HTTPS_PORT,0),close);
-    std::unique_ptr<void,decltype(close)> request(connection?WinHttpOpenRequest(connection.get(),L"GET",
-        L"/repos/DrNoisewater/Glimpse/releases/latest",nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE):nullptr,close);
-    if(!request || !WinHttpSendRequest(request.get(),L"Accept: application/vnd.github+json\r\n",DWORD(-1),WINHTTP_NO_REQUEST_DATA,0,0,0)
-        || !WinHttpReceiveResponse(request.get(),nullptr)) {
-        result.detail=L"GitHub couldn't be reached (error "+std::to_wstring(GetLastError())+L"). Check your internet connection.";
-        return result;
-    }
-    DWORD status=0, size=sizeof(status);
-    WinHttpQueryHeaders(request.get(),WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX);
-    if(status!=200) { result.detail=L"GitHub answered with status "+std::to_wstring(status)+L"."; return result; }
+    WinHttp http;
     std::string body;
-    for(DWORD available=0; WinHttpQueryDataAvailable(request.get(),&available) && available && body.size()<1048576;) {
-        std::string chunk(available,'\0'); DWORD read=0;
-        if(!WinHttpReadData(request.get(),chunk.data(),available,&read) || !read) break;
-        body.append(chunk,0,read);
-    }
+    if(!http.get(L"api.github.com",L"/repos/DrNoisewater/Glimpse/releases/latest",L"Accept: application/vnd.github+json\r\n")
+        || !http.read(4*1048576,[&](const char* p,DWORD n) { body.append(p,n); return true; })) { result.detail=http.problem; return result; }
     auto tag=releaseTag(body);
     auto latest=tag?parseVersion(*tag):std::nullopt;
     auto current=parseVersion(GLIMPSE_VERSION_A);
     if(!latest || !current) { result.detail=L"GitHub's answer didn't include a version Glimpse understands."; return result; }
     result.version=widen(versionText(*latest));
+    result.sha256=assetSha256(body,installerName(*latest)).value_or("");
     result.kind=isNewer(*latest,*current)?UpdateResult::Available:UpdateResult::Current;
     return result;
 }
-void checkForUpdates() {
-    if(checkingUpdates) return;
-    checkingUpdates=true;
-    std::thread([] {
-        auto result=new UpdateResult;
-        try { *result=fetchLatestRelease(); } catch(...) { result->kind=UpdateResult::Failed; result->detail=L"The update check failed unexpectedly."; }
-        if(!PostMessageW(mainWindow,WM_UPDATE_RESULT,0,reinterpret_cast<LPARAM>(result))) delete result;
-    }).detach();
+
+// Downloads and verifies the installer into %TEMP%\Glimpse-Update.
+DownloadResult downloadInstaller(const std::wstring& version,const std::string& sha256) {
+    DownloadResult result{version};
+    std::string narrow; for(wchar_t c:version) narrow+=c<128?char(c):'?';
+    const auto parsed=parseVersion(narrow);
+    if(!parsed || sha256.size()!=64) { result.detail=L"This release has no verified installer."; return result; }
+    const std::string name=installerName(*parsed);
+    std::error_code ec;
+    const fs::path folder=fs::temp_directory_path(ec)/L"Glimpse-Update";
+    fs::create_directories(folder,ec);
+    const fs::path file=folder/widen(name), partial=folder/(widen(name)+L".download");
+    fs::remove(partial,ec);
+    BCRYPT_ALG_HANDLE algorithm{}; BCRYPT_HASH_HANDLE hash{};
+    if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0 || BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)<0) {
+        if(algorithm) BCryptCloseAlgorithmProvider(algorithm,0);
+        result.detail=L"Windows couldn't verify the download."; return result;
+    }
+    bool ok=false;
+    {
+        std::ofstream out(partial,std::ios::binary|std::ios::trunc);
+        WinHttp http;
+        const std::wstring path=L"/DrNoisewater/Glimpse/releases/download/v"+version+L"/"+widen(name);
+        ok=out && http.get(L"github.com",path,nullptr) && http.read(200*1048576,[&](const char* p,DWORD n) {
+            if(BCryptHashData(hash,reinterpret_cast<PUCHAR>(const_cast<char*>(p)),n,0)<0) return false;
+            out.write(p,n); return bool(out);
+        });
+        if(!ok) result.detail=http.problem.empty()?L"The update couldn't be saved. Check free disk space.":http.problem;
+        out.close(); if(ok && !out) { ok=false; result.detail=L"The update couldn't be saved. Check free disk space."; }
+    }
+    unsigned char digest[32]{};
+    if(ok && BCryptFinishHash(hash,digest,sizeof(digest),0)<0) { ok=false; result.detail=L"Windows couldn't verify the download."; }
+    BCryptDestroyHash(hash); BCryptCloseAlgorithmProvider(algorithm,0);
+    if(ok) {
+        static const char hexDigits[]="0123456789abcdef";
+        std::string actual;
+        for(unsigned char b:digest) { actual+=hexDigits[b>>4]; actual+=hexDigits[b&15]; }
+        if(actual!=sha256) { ok=false; result.detail=L"The downloaded installer didn't match the checksum GitHub published, so it wasn't run."; }
+    }
+    if(ok) { fs::remove(file,ec); fs::rename(partial,file,ec); if(ec) { ok=false; result.detail=L"The update couldn't be saved."; } }
+    if(!ok) fs::remove(partial,ec); else result.file=file;
+    return result;
+}
+
+// True when this Glimpse.exe is the copy the installer manages (not the portable zip).
+bool installedCopy() {
+    wchar_t location[MAX_PATH*2]{}; DWORD bytes=sizeof(location);
+    const std::wstring key=std::wstring(L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\")+InstallerAppId;
+    if(RegGetValueW(HKEY_CURRENT_USER,key.c_str(),L"InstallLocation",RRF_RT_REG_SZ,nullptr,location,&bytes)!=ERROR_SUCCESS) return false;
+    wchar_t exe[32768]{}; GetModuleFileNameW(nullptr,exe,DWORD(std::size(exe)));
+    std::error_code ec;
+    return fs::equivalent(fs::path(exe).parent_path(),fs::path(location),ec) && !ec;
 }
 void openUrl(const std::wstring& url) {
     if(reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL))<=32)
         error(L"Couldn't open your web browser. Visit "+url);
 }
+void checkForUpdates() {
+    if(updateStep!=UpdateStep::Idle) return;
+    updateStep=UpdateStep::Checking;
+    std::thread([] {
+        auto result=new UpdateResult;
+        try { *result=fetchLatestRelease(); } catch(...) { *result={}; result->detail=L"The update check failed unexpectedly."; }
+        if(!PostMessageW(mainWindow,WM_UPDATE_RESULT,0,reinterpret_cast<LPARAM>(result))) delete result;
+    }).detach();
+}
+void startDownload(const std::wstring& version,const std::string& sha256) {
+    updateStep=UpdateStep::Downloading;
+    balloon(L"Updating Glimpse",L"Downloading Glimpse "+version+L"…",false);
+    std::thread([version,sha256] {
+        auto result=new DownloadResult{version};
+        try { *result=downloadInstaller(version,sha256); } catch(...) { result->detail=L"The download failed unexpectedly."; }
+        if(!PostMessageW(mainWindow,WM_UPDATE_DOWNLOADED,0,reinterpret_cast<LPARAM>(result))) delete result;
+    }).detach();
+}
+// Closes Glimpse; wWinMain runs the installer once the single-instance mutex is released.
+void installReadyUpdate() {
+    if(readyInstaller.empty()) return;
+    if(state!=State::Idle) { balloon(L"Glimpse update ready",L"Finish this recording, then choose Install update from the tray menu.",false); return; }
+    installOnExit=readyInstaller;
+    closeSelection(); DestroyWindow(mainWindow);
+}
 void showUpdateResult(const UpdateResult& r) {
-    checkingUpdates=false;
+    updateStep=UpdateStep::Idle;
     if(r.kind==UpdateResult::Available) {
-        auto text=L"Glimpse "+r.version+L" is available. You have " GLIMPSE_VERSION L".\n\nOpen the download page? Run Glimpse-Setup-"+r.version+L".exe from there to update.";
-        if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONINFORMATION|MB_SETFOREGROUND)==IDYES)
-            openUrl(std::wstring(ReleasesPage)+L"/tag/v"+r.version);
+        const bool canInstall=installedCopy() && r.sha256.size()==64;
+        std::wstring text=L"Glimpse "+r.version+L" is available. You have " GLIMPSE_VERSION L".\n\n"+
+            (canInstall?L"Install it now? Glimpse will close, update and reopen by itself in a few seconds."
+                       :installedCopy()?L"This release can't be installed automatically. Open its download page?"
+                       :L"This copy of Glimpse is the portable version, so it can't update itself. Open the download page?");
+        if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONINFORMATION|MB_SETFOREGROUND)!=IDYES) return;
+        if(canInstall) startDownload(r.version,r.sha256); else openUrl(std::wstring(ReleasesPage)+L"/tag/v"+r.version);
     } else if(r.kind==UpdateResult::Current) {
         MessageBoxW(mainWindow,L"You have the latest version of Glimpse (" GLIMPSE_VERSION L").",L"Glimpse update",MB_OK|MB_ICONINFORMATION|MB_SETFOREGROUND);
     } else {
         auto text=L"Couldn't check for updates. "+r.detail+L"\n\nOpen the releases page instead?";
         if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND)==IDYES) openUrl(ReleasesPage);
     }
+}
+void showDownloadResult(const DownloadResult& r) {
+    updateStep=UpdateStep::Idle;
+    if(r.file.empty()) {
+        auto text=L"Glimpse "+r.version+L" couldn't be installed. "+r.detail+L"\n\nOpen the download page instead?";
+        if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND)==IDYES)
+            openUrl(std::wstring(ReleasesPage)+L"/tag/v"+r.version);
+        return;
+    }
+    readyInstaller=r.file; readyVersion=r.version;
+    installReadyUpdate();
+}
+// Called by wWinMain after the mutex is closed, so Setup never finds Glimpse running.
+void runInstallerOnExit() {
+    if(installOnExit.empty()) return;
+    SHELLEXECUTEINFOW info{sizeof(info)};
+    info.fMask=SEE_MASK_NOASYNC; info.lpVerb=L"open"; info.lpFile=installOnExit.c_str(); info.nShow=SW_SHOWNORMAL;
+    info.lpParameters=L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /RELAUNCH=1";
+    if(!ShellExecuteExW(&info))
+        MessageBoxW(nullptr,(L"The update couldn't be started (error "+std::to_wstring(GetLastError())+L"). Run "+installOnExit.wstring()+L" yourself.").c_str(),
+            L"Glimpse update",MB_OK|MB_ICONERROR|MB_SETFOREGROUND);
 }
 void trayMenu() {
     HMENU menu=CreatePopupMenu(), recent=CreatePopupMenu(); recentFiles.clear();
@@ -987,7 +1109,9 @@ void trayMenu() {
     AppendMenuW(menu,MF_STRING,Folder,L"Open captures folder");
     AppendMenuW(menu,MF_STRING|(state==State::Idle?0:MF_GRAYED),Settings,L"Settings…");
     AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
-    AppendMenuW(menu,MF_STRING|(checkingUpdates?MF_GRAYED:0),CheckUpdates,checkingUpdates?L"Checking for updates…":L"Check for updates…");
+    const std::wstring updateText=updateStep==UpdateStep::Checking?L"Checking for updates…":updateStep==UpdateStep::Downloading?L"Downloading update…":
+        !readyInstaller.empty()?L"Install update (Glimpse "+readyVersion+L")":L"Check for updates…";
+    AppendMenuW(menu,MF_STRING|(updateStep!=UpdateStep::Idle?MF_GRAYED:0),CheckUpdates,updateText.c_str());
     AppendMenuW(menu,MF_STRING|MF_GRAYED,0,L"Glimpse " GLIMPSE_VERSION);
     AppendMenuW(menu,MF_STRING,Exit,L"Exit");
     POINT p; GetCursorPos(&p); SetForegroundWindow(mainWindow);
@@ -1008,7 +1132,7 @@ void handleCommand(HWND w,UINT id) {
     case New: newRecording(); break;
     case Folder: openFolder(); break;
     case Settings: settings(); break;
-    case CheckUpdates: checkForUpdates(); break;
+    case CheckUpdates: if(!readyInstaller.empty()) installReadyUpdate(); else checkForUpdates(); break;
     case Exit:
         if(state==State::Saving) quitAfterSave=true;
         else if(state==State::Recording||state==State::Paused||state==State::Starting) { quitAfterSave=true; stopRecording(); }
@@ -1285,6 +1409,11 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
             EnableWindow(pauseButton,TRUE); audioControls(); refreshIndicators();
         }
         return 0;
+    case WM_UPDATE_DOWNLOADED: {
+        std::unique_ptr<DownloadResult> result(reinterpret_cast<DownloadResult*>(lp));
+        showDownloadResult(*result);
+        return 0;
+    }
     case WM_UPDATE_RESULT: {
         std::unique_ptr<UpdateResult> result(reinterpret_cast<UpdateResult*>(lp));
         showUpdateResult(*result);
@@ -1411,5 +1540,7 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int) {
     if(background) DeleteObject(background);
     if(fieldBrush) DeleteObject(fieldBrush);
     BufferedPaintUnInit(); gp::GdiplusShutdown(gdiplusToken);
-    OleUninitialize(); CloseHandle(single); return 0;
+    CloseHandle(single); // Release the instance mutex first: Setup refuses to run while Glimpse holds it.
+    runInstallerOnExit();
+    OleUninitialize(); return 0;
 }
