@@ -10,6 +10,8 @@
 #include <thread>
 
 namespace glimpse {
+// TEMPORARY: true while Stagehand is open and offering its sound (audio.cpp).
+bool stagehandOffersSound();
 constexpr UINT WM_CAPTURE_STARTED = WM_APP + 10;
 constexpr UINT WM_CAPTURE_FINISHED = WM_APP + 11;
 // lParam: heap std::wstring* the receiver deletes. An audio source dropped out or came back.

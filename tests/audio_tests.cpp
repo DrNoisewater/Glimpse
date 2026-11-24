@@ -1,4 +1,7 @@
 #include "audio_policy.hpp"
+#include "stagehand_feed.hpp"
+#include <cstring>
+#include <vector>
 #include "policy.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -60,5 +63,35 @@ int main() {
     expect(first==47952,"resume uses pause-adjusted timeline for old packets");
     expect(audioFrameAt(36000000000LL)==172800000,"one hour audio clock does not overflow");
     expect(audioTimeAt(172800000)==36000000000LL,"one hour round trip");
+    {
+        // TEMPORARY: Stagehand's sound over the pipe
+        auto packet=[](uint32_t magic,uint32_t rate,std::vector<float> s) {
+            std::vector<uint8_t> b(16+s.size()*4);
+            const uint32_t h[4]{magic,rate,uint32_t(s.size()/2),0};
+            std::memcpy(b.data(),h,16); std::memcpy(b.data()+16,s.data(),s.size()*4); return b;
+        };
+        StagehandPacketReader reader; int got=0; float first=0; uint32_t rate=0;
+        auto a=packet(StagehandMagic,44100,{.5f,-.5f,.25f,-.25f}), b=packet(StagehandMagic,48000,{1.f,1.f});
+        std::vector<uint8_t> both(a); both.insert(both.end(),b.begin(),b.end());
+        auto take=[&](const StagehandPacketReader::Packet& p) { if(!got++) { first=p.samples[0]; rate=p.rate; } };
+        reader.push(both.data(),5,take); expect(got==0,"half a header waits for the rest");
+        reader.push(both.data()+5,both.size()-5,take);
+        expect(got==2&&first==.5f&&rate==44100,"packets read across split writes");
+        auto bad=packet(0x12345678,48000,{0,0}); reader.push(bad.data(),bad.size(),take);
+        expect(reader.broken()&&got==2,"a bad header stops the line instead of reading noise");
+        StagehandResampler same; std::vector<float> out;
+        const float in48[]{.1f,.2f,.3f,.4f}; same.process(48000,in48,2,out);
+        expect(out.size()==4&&out[2]==.3f,"48 kHz passes through untouched");
+        StagehandResampler rs; out.clear(); std::vector<float> ramp;
+        for(int i=0;i<4410;++i) { ramp.push_back(float(i)/4410.f); ramp.push_back(0); }
+        for(int k=0;k<10;++k) rs.process(44100,ramp.data()+k*441*2,441,out);
+        expect(std::abs(int(out.size()/2)-4800)<=2,"44.1 kHz becomes 48 kHz at the right length");
+        bool smooth=true; for(size_t i=2;i<out.size();i+=2) if(out[i]-out[i-2]<0||out[i]-out[i-2]>.0003f) smooth=false;
+        expect(smooth,"no jumps where packets meet");
+        StagehandFeedClock clock;
+        expect(clock.place(10480,480)==10000,"first packet placed by when it arrived");
+        expect(clock.place(11100,480)==10480,"pipe jitter keeps the sound continuous");
+        expect(clock.place(30000,480)==29520&&clock.resyncs==1,"a real gap moves it");
+    }
     std::cout<<checks<<" audio checks passed\n";
 }

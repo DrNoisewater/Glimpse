@@ -1,3 +1,13 @@
+# Glimpse 0.4.0
+
+- Records Stagehand's sound. Stagehand (the guitar app) takes the speakers for
+  itself, so Windows gave Glimpse silence. Now, whenever Stagehand is open,
+  Glimpse records Stagehand's own sound (the song, the guitar, drums, the voice)
+  straight from Stagehand, with nothing to set: even with audio set to Silent.
+  The System sound button, slider and meter control it during the recording.
+  If Stagehand's sound engine isn't running, ordinary system audio is used.
+  Needs Stagehand 4.32.0 or later. This is temporary and will be removed later.
+
 # Glimpse 0.3.3
 
 - Glimpse now checks for updates by itself 15 seconds after it starts. If a
