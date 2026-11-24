@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 # The one place the version lives. The Release workflow checks it matches the
 # version you type when publishing, and it flows into the EXE, installer and app.
-project(Glimpse VERSION 0.3.1 DESCRIPTION "Instant screen recorder" LANGUAGES CXX)
+project(Glimpse VERSION 0.3.2 DESCRIPTION "Instant screen recorder" LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -37,7 +37,7 @@ target_compile_options(Glimpse PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplus
 # Static CRT: the EXE runs on a clean Windows 10/11 install with nothing else to install.
 set_property(TARGET Glimpse PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(Glimpse PRIVATE windowsapp d3d11 dxgi mfplat mfreadwrite mfuuid gdiplus
-  ole32 oleaut32 uuid shell32 shlwapi comctl32 dwmapi uxtheme wtsapi32 user32 gdi32 advapi32)
+  ole32 oleaut32 uuid shell32 shlwapi comctl32 dwmapi uxtheme wtsapi32 winhttp bcrypt user32 gdi32 advapi32)
 # The manifest is embedded by resources.rc; do not merge the linker's generated one.
 target_link_options(Glimpse PRIVATE /MANIFEST:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA)
 

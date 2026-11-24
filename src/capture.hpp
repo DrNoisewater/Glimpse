@@ -12,11 +12,14 @@
 namespace glimpse {
 constexpr UINT WM_CAPTURE_STARTED = WM_APP + 10;
 constexpr UINT WM_CAPTURE_FINISHED = WM_APP + 11;
+// lParam: heap std::wstring* the receiver deletes. An audio source dropped out or came back.
+constexpr UINT WM_CAPTURE_NOTICE = WM_APP + 12;
 struct CaptureResult {
     std::filesystem::path file, partial;
     std::wstring error;
     double seconds{}, startMs{};
     uint64_t frames{}, lateFrames{}, bytes{};
+    unsigned audioInterrupted{}, audioNeverCaptured{}; // AudioMic/AudioSystem bits
     bool cancelled{}, gpuInput{}, qualityVbr{}, highProfile{};
 };
 class Recorder {

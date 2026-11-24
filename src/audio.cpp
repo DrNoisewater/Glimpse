@@ -60,9 +60,16 @@ struct AudioRecorder::Endpoint {
         }
         readyCv_.notify_one();
     }
-    void throwIfFailed() const {
+    // S_OK while capturing; otherwise the HRESULT that stopped the worker.
+    HRESULT failure() const {
         std::lock_guard lock(statusMutex_);
-        if(error_) std::rethrow_exception(error_);
+        return codeOf(error_);
+    }
+    static HRESULT codeOf(std::exception_ptr error) {
+        if(!error) return S_OK;
+        try { std::rethrow_exception(error); }
+        catch(hresult_error const& e) { return e.code(); }
+        catch(...) { return E_FAIL; }
     }
     void publishPeak(float value) {
         float previous=packetPeak_.load(std::memory_order_relaxed);
@@ -83,7 +90,7 @@ struct AudioRecorder::Endpoint {
                 com_ptr<IMMDevice> device;
                 const HRESULT endpointResult=enumerator->GetDefaultAudioEndpoint(loopback?eRender:eCapture,eConsole,device.put());
                 if(FAILED(endpointResult))
-                    throw hresult_error(endpointResult,loopback?L"No default system-audio output is available.":L"No default microphone is available. Choose one in Windows sound settings.");
+                    throw hresult_error(endpointResult);
                 com_ptr<IAudioClient> client;
                 check_hresult(device->Activate(__uuidof(IAudioClient),CLSCTX_ALL,nullptr,client.put_void()));
                 WAVEFORMATEX format{};
@@ -98,7 +105,9 @@ struct AudioRecorder::Endpoint {
                 // 500 ms WASAPI device-side cushion; the independent worker drains
                 // every ~3 ms instead of waiting for an H.264 frame to finish.
                 HRESULT hr=client->Initialize(AUDCLNT_SHAREMODE_SHARED,flags,5000000,0,&format,nullptr);
-                if(FAILED(hr)) throw hresult_error(hr,loopback?L"Windows could not start system audio. Check the default output device.":L"Windows could not start the microphone. Check microphone privacy permissions for desktop apps.");
+                // AUDCLNT_E_DEVICE_IN_USE here means another app opened the device in
+                // exclusive mode; Windows will not share it until that app lets go.
+                check_hresult(hr);
                 com_ptr<IAudioCaptureClient> capture;
                 check_hresult(client->GetService(IID_PPV_ARGS(capture.put())));
                 check_hresult(client->Start());
@@ -234,12 +243,31 @@ void AudioRecorder::collect(unsigned mode,const Timeline* timeline,int64_t activ
             mapping_.anchorTime=timeline->at(activeFrom);
         }
     }
-    if(mode&AudioMic) { if(!mic_) mic_=std::make_unique<Endpoint>(*this,false); mic_->throwIfFailed(); }
-    else mic_.reset();
-    if(mode&AudioSystem) { if(!system_) system_=std::make_unique<Endpoint>(*this,true); system_->throwIfFailed(); }
-    else system_.reset();
+    keep(mic_,micHealth_,false,mode&AudioMic);
+    keep(system_,systemHealth_,true,mode&AudioSystem);
     micLevel_=(mode&AudioMic && mic_)?std::max(micLevel_*.85f,mic_->takePeak()):0.f;
     systemLevel_=(mode&AudioSystem && system_)?std::max(systemLevel_*.85f,system_->takePeak()):0.f;
+}
+
+void AudioRecorder::keep(std::unique_ptr<Endpoint>& endpoint,AudioSourceHealth& health,bool system,bool wanted) {
+    if(!wanted) { endpoint.reset(); health.disable(); return; }
+    const int64_t now=qpcTicks();
+    HRESULT failure=S_OK;
+    if(endpoint) {
+        failure=endpoint->failure();
+        if(SUCCEEDED(failure)) return;
+        endpoint.reset(); // Lost mid-recording (unplugged, or taken over in exclusive mode).
+    } else {
+        if(!health.shouldTry(now)) return;
+        try {
+            endpoint=std::make_unique<Endpoint>(*this,system);
+            if(health.recover())
+                notices_.push_back(system?L"System audio is available again and is being recorded."
+                                         :L"The microphone is available again and is being recorded.");
+            return;
+        } catch(...) { failure=Endpoint::codeOf(std::current_exception()); }
+    }
+    if(health.fail(now)) notices_.push_back(audioProblemText(system,uint32_t(failure)));
 }
 
 void AudioRecorder::writeUntil(IMFSinkWriter* writer,int64_t endTime) {

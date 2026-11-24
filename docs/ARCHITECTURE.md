@@ -62,6 +62,9 @@ loopback capture for the default playback endpoint. Windows audio-engine
 conversion requests stereo 48 kHz PCM16. Timestamped packets feed a bounded,
 two-second ring shared by both inputs; each has independent gain. The AAC track
 is registered before sink-writer BeginWriting. Silent mode has no audio stream.
+An endpoint that fails to open or stops mid-recording never aborts the capture:
+`AudioRecorder::keep` drops it, records silence for that source, retries every
+2 s (`AudioSourceHealth`) and posts `WM_CAPTURE_NOTICE` text for the tray.
 
 QPC packet timestamps and video timestamps share 100 ns units. Audio uses a
 100 ms interleave cushion. Source data before the current active interval is

@@ -86,8 +86,10 @@ and a representative capture. No rows above are marked passed in this delivery.
 - 44.1/48/96 kHz default devices, mono mic, stereo and surround playback; check
   Windows audio-engine format conversion and channel mapping.
 - No playback packets while desktop is silent: audio track keeps correct duration.
-- Mic privacy denied, no default mic, disconnected mic/output, exclusive-mode use:
-  explicit error and recoverable portion saved where possible.
+- Mic privacy denied, no default mic, disconnected mic/output, exclusive-mode use
+  (before and during recording): video keeps recording, the source becomes
+  silence, one tray message names the cause, and the source resumes within ~2 s
+  of being freed (with a "available again" message). Share summary notes the gap.
 - Heavy video encoding: inspect audio discontinuity/drop counters for starvation.
 - Border/dot/toolbar stay absent from output; dot blinks red only while recording.
 - Small regions, full screen, multiple monitors, mixed DPI: toolbar stays usable.

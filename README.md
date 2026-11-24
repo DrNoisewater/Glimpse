@@ -73,8 +73,13 @@ change, device error, or session lock stops capture and attempts to save what
 has already been encoded.
 
 Right-click the tray icon for New Recording, Recent Captures (last ten), Open
-Captures Folder, Settings, or Exit. Clicking a recent capture opens its share
-panel. Settings offers the shortcut, folder, quality, frame-rate ceiling,
+Captures Folder, Settings, Check for updates, or Exit. Clicking a recent capture opens its share
+panel. **Check for updates** asks GitHub for the latest release (sending only a
+"Glimpse/version" user agent). If it's newer, click **Yes** to install it: Glimpse
+downloads the installer, checks it against the SHA-256 checksum GitHub publishes
+for it, closes, updates silently and reopens, keeping your settings. If a recording
+is running, the update waits and the menu shows **Install update** for afterwards. The
+portable zip can't update itself, so it opens the download page instead. Settings offers the shortcut, folder, quality, frame-rate ceiling,
 opt-in sign-in startup, audio defaults and software-encoding compatibility mode.
 
 ## Narration, mixing and volume
@@ -103,9 +108,18 @@ The narration and playback audio are mixed into the resulting MP4.
   can still distort; reduce levels if the meters reach amber/red.
 - Muting releases that endpoint. Pause discards audio rather than saving it;
   an enabled microphone may still show Windows’ microphone-use indicator.
-- If a selected device cannot open or is disconnected, the app reports the
-  problem and attempts to save the usable recording. Device hot-swapping and
-  a dedicated device picker are not implemented; choose defaults in Windows.
+- If an audio source can't be opened or drops out mid-recording, the recording
+  keeps going: that source is recorded as silence, Glimpse shows a tray message
+  saying why, retries every 2 seconds, and resumes it automatically once it's free.
+  The saved-file summary notes "without microphone" or "mic gaps" when that happened.
+- Apps that take **exclusive control** of a device (some music and live-audio
+  apps do this for low latency) lock everyone else out; Windows doesn't let any
+  other app read that device until they let go. To record it alongside such an
+  app, set that app to shared mode, or in Windows open Sound settings → the
+  device → Properties → Advanced and untick *Allow applications to take
+  exclusive control of this device*. A different microphone also works if the app
+  only holds one device. Device hot-swapping and a dedicated device picker are
+  not implemented; choose defaults in Windows.
 - This records narration **while capturing**. It is not an editor for adding
   voiceover to an existing video file afterward.
 

@@ -297,6 +297,12 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
     AudioRecorder audio;
     com_ptr<IMFSample> pending;
     int64_t pendingTime=0, duration=0;
+    auto postNotices=[&] {
+        for(auto& text:audio.takeNotices()) {
+            auto message=new std::wstring(std::move(text));
+            if(!PostMessageW(owner,WM_CAPTURE_NOTICE,0,reinterpret_cast<LPARAM>(message))) delete message;
+        }
+    };
     try {
         init_apartment(apartment_type::multi_threaded); apartment=true;
         check_hresult(MFStartup(MF_VERSION,MFSTARTUP_FULL)); mf=true;
@@ -373,7 +379,7 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
                 allReady &= src->received;
             }
             auto now=ticks();
-            if(!timeline) audio.collect(audioMode_.load(),nullptr,0,true);
+            if(!timeline) { audio.collect(audioMode_.load(),nullptr,0,true); postNotices(); }
             if(!allReady) {
                 if(now>readyDeadline) throw hresult_error(E_FAIL,L"No screen frames arrived. Check capture permissions and try again.");
                 std::unique_lock lock(mutex_); cv_.wait_for(lock,std::chrono::milliseconds(5)); continue;
@@ -390,6 +396,7 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
             int64_t time=timeline->at(now); elapsed_=time;
             audio.collect(audioMode_.load(),timeline.get(),audioFloor,paused,micGain_.load(),systemGain_.load());
             micLevel_=audio.micLevel(); systemLevel_=audio.systemLevel();
+            postNotices();
             // Audio is collected on dedicated workers, independent of this GPU /
             // H.264 loop. Leave a 300 ms PCM staging window for packet jitter.
             audio.writeUntil(encoder.writer.get(),std::max<int64_t>(0,time-3000000));
@@ -443,6 +450,7 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
     // Capture counters before endpoint teardown, even if the user toggled a source.
     const auto timestampCorrections=audio.timestampCorrections();
     const auto inferredTimestamps=audio.inferredTimestamps();
+    result->audioInterrupted=audio.interrupted(); result->audioNeverCaptured=audio.neverCaptured();
     pending=nullptr; audio.close(); encoder.close();
     if(mf) MFShutdown(); if(apartment) uninit_apartment();
     // Optional local sidecar with observed timing for troubleshooting (Settings > diagnostics).
@@ -457,6 +465,7 @@ void Recorder::run(HWND owner, Rect area, VideoSpec spec, std::filesystem::path 
                 <<"\naudio_bad_timestamps="<<audio.badTimestamps()<<"\naudio_timestamp_corrections="<<timestampCorrections
                 <<"\naudio_inferred_timestamps="<<inferredTimestamps<<"\naudio_mixed_overload_frames="<<audio.overloadedFrames()
                 <<"\naudio_mixed_peak_before_limiter="<<audio.mixedPeak()
+                <<"\naudio_interrupted_sources="<<result->audioInterrupted<<"\naudio_never_captured_sources="<<result->audioNeverCaptured
                 <<"\nNote: GPU input does not prove that the selected encoder is hardware.\n";
         } catch(...) {}
     }

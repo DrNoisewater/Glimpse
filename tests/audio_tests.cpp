@@ -37,6 +37,19 @@ int main() {
     for(int i=0;i<10000;++i) {
         expect(audioNearestFrame(audioTimeAt(i))==i,"48k timestamp quantization preserves sample index");
     }
+    expect(classifyAudioFailure(0x8889000Au)==AudioProblem::InUse,"exclusive-mode owner is recognised");
+    expect(classifyAudioFailure(0x80070005u)==AudioProblem::Blocked,"privacy block is recognised");
+    expect(classifyAudioFailure(0x88890004u)==AudioProblem::Lost,"mid-recording takeover is recognised");
+    expect(audioProblemText(false,0x8889000Au).find(L"exclusive control of the microphone")!=std::wstring::npos,"in-use mic text names the cause");
+    expect(audioProblemText(true,0x12345678u).find(L"0x12345678")!=std::wstring::npos,"unknown errors keep their code");
+    AudioSourceHealth health;
+    expect(health.shouldTry(0),"a new source is opened immediately");
+    expect(health.fail(100),"first failure is announced");
+    expect(!health.shouldTry(101),"failed source waits before retrying");
+    expect(!health.fail(AudioSourceHealth::retryInterval+100),"repeat failures are not re-announced");
+    expect(health.shouldTry(2*AudioSourceHealth::retryInterval+100),"failed source is retried");
+    expect(health.recover()&&health.everDown&&health.everUp,"recovery is announced and remembered");
+    expect(!health.recover(),"healthy source is not re-announced");
     for(int i=0;i<100;++i) { r.add(r.head(),.1f,.2f); v=r.pop(); expect(v[0]==3277&&v[1]==6553,"ring reuse never leaks old audio"); }
     Timeline t(10000000); // start at one second on QPC clock
     int64_t floor=10000000, packet=9990000;
