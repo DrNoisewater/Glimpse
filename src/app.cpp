@@ -32,7 +32,8 @@ constexpr UINT WM_UPDATE_RESULT=WM_APP+13; // lParam: heap UpdateResult* the rec
 constexpr UINT WM_UPDATE_DOWNLOADED=WM_APP+14; // lParam: heap DownloadResult* the receiver deletes
 constexpr UINT Record=200, Pause=201, Cancel=202, Copy=203, Reveal=204, Drag=205;
 constexpr UINT Mic=206, SystemAudio=207, Dismiss=208, MicVolume=210, SystemVolume=211;
-constexpr UINT AudioMenuBase=400, ToastTimer=4;
+constexpr UINT AudioMenuBase=400, ToastTimer=4, StartupUpdateTimer=5;
+constexpr UINT StartupUpdateDelayMs=15000; // Let Glimpse (and sign-in) settle before going online.
 constexpr UINT Save=300, Browse=301, RecentBase=1000;
 constexpr UINT Hotkey=1, RetryCopy=2, ClockTimer=3;
 enum class State { Idle, Selecting, Ready, Starting, Recording, Paused, Saving };
@@ -169,9 +170,10 @@ std::wstring hotkeyText(WORD key) {
     if(GetKeyNameTextW(code,name,int(std::size(name)))>0) s+=name; else s+=wchar_t(vk);
     return s;
 }
-bool balloonOpensShare{}; // Only the "capture saved" balloon should open the share panel when clicked.
-void balloon(const std::wstring& title,const std::wstring& body,bool opensShare=true) {
-    balloonOpensShare=opensShare;
+// What clicking the current tray notification does.
+enum class BalloonClick { None, Share, Update } balloonClick{};
+void balloon(const std::wstring& title,const std::wstring& body,BalloonClick click=BalloonClick::Share) {
+    balloonClick=click;
     tray.uFlags=NIF_INFO; wcsncpy_s(tray.szInfoTitle,title.c_str(),_TRUNCATE);
     wcsncpy_s(tray.szInfo,body.c_str(),_TRUNCATE); tray.dwInfoFlags=NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY,&tray);
@@ -1021,18 +1023,19 @@ void openUrl(const std::wstring& url) {
     if(reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL))<=32)
         error(L"Couldn't open your web browser. Visit "+url);
 }
-void checkForUpdates() {
+// quiet: the automatic check at startup, which only speaks up when there's an update.
+void checkForUpdates(bool quiet=false) {
     if(updateStep!=UpdateStep::Idle) return;
     updateStep=UpdateStep::Checking;
-    std::thread([] {
+    std::thread([quiet] {
         auto result=new UpdateResult;
         try { *result=fetchLatestRelease(); } catch(...) { *result={}; result->detail=L"The update check failed unexpectedly."; }
-        if(!PostMessageW(mainWindow,WM_UPDATE_RESULT,0,reinterpret_cast<LPARAM>(result))) delete result;
+        if(!PostMessageW(mainWindow,WM_UPDATE_RESULT,quiet,reinterpret_cast<LPARAM>(result))) delete result;
     }).detach();
 }
 void startDownload(const std::wstring& version,const std::string& sha256) {
     updateStep=UpdateStep::Downloading;
-    balloon(L"Updating Glimpse",L"Downloading Glimpse "+version+L"…",false);
+    balloon(L"Updating Glimpse",L"Downloading Glimpse "+version+L"…",BalloonClick::None);
     std::thread([version,sha256] {
         auto result=new DownloadResult{version};
         try { *result=downloadInstaller(version,sha256); } catch(...) { result->detail=L"The download failed unexpectedly."; }
@@ -1042,13 +1045,15 @@ void startDownload(const std::wstring& version,const std::string& sha256) {
 // Closes Glimpse; wWinMain runs the installer once the single-instance mutex is released.
 void installReadyUpdate() {
     if(readyInstaller.empty()) return;
-    if(state!=State::Idle) { balloon(L"Glimpse update ready",L"Finish this recording, then choose Install update from the tray menu.",false); return; }
+    if(state!=State::Idle) { balloon(L"Glimpse update ready",L"Finish this recording, then choose Install update from the tray menu.",BalloonClick::None); return; }
     installOnExit=readyInstaller;
     closeSelection(); DestroyWindow(mainWindow);
 }
+UpdateResult availableUpdate; // Set when a check (manual or automatic) found a newer release.
 void showUpdateResult(const UpdateResult& r) {
     updateStep=UpdateStep::Idle;
     if(r.kind==UpdateResult::Available) {
+        availableUpdate=r;
         const bool canInstall=installedCopy() && r.sha256.size()==64;
         std::wstring text=L"Glimpse "+r.version+L" is available. You have " GLIMPSE_VERSION L".\n\n"+
             (canInstall?L"Install it now? Glimpse will close, update and reopen by itself in a few seconds."
@@ -1062,6 +1067,21 @@ void showUpdateResult(const UpdateResult& r) {
         auto text=L"Couldn't check for updates. "+r.detail+L"\n\nOpen the releases page instead?";
         if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND)==IDYES) openUrl(ReleasesPage);
     }
+}
+void offerAvailableUpdate() {
+    if(updateStep!=UpdateStep::Idle) return;
+    if(!readyInstaller.empty()) installReadyUpdate();
+    else if(availableUpdate.kind==UpdateResult::Available) showUpdateResult(availableUpdate);
+    else checkForUpdates();
+}
+// The startup check stays silent unless there is something to install.
+void quietUpdateResult(const UpdateResult& r) {
+    updateStep=UpdateStep::Idle;
+    if(r.kind!=UpdateResult::Available) return;
+    availableUpdate=r;
+    // Don't pop a notification into a recording; the tray menu still offers it.
+    if(state==State::Idle)
+        balloon(L"Glimpse "+r.version+L" is available",L"Click here to install it, or choose Install Glimpse "+r.version+L"… from the tray menu later.",BalloonClick::Update);
 }
 void showDownloadResult(const DownloadResult& r) {
     updateStep=UpdateStep::Idle;
@@ -1110,7 +1130,8 @@ void trayMenu() {
     AppendMenuW(menu,MF_STRING|(state==State::Idle?0:MF_GRAYED),Settings,L"Settings…");
     AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
     const std::wstring updateText=updateStep==UpdateStep::Checking?L"Checking for updates…":updateStep==UpdateStep::Downloading?L"Downloading update…":
-        !readyInstaller.empty()?L"Install update (Glimpse "+readyVersion+L")":L"Check for updates…";
+        !readyInstaller.empty()?L"Install update (Glimpse "+readyVersion+L")":
+        availableUpdate.kind==UpdateResult::Available?L"Install Glimpse "+availableUpdate.version+L"…":L"Check for updates…";
     AppendMenuW(menu,MF_STRING|(updateStep!=UpdateStep::Idle?MF_GRAYED:0),CheckUpdates,updateText.c_str());
     AppendMenuW(menu,MF_STRING|MF_GRAYED,0,L"Glimpse " GLIMPSE_VERSION);
     AppendMenuW(menu,MF_STRING,Exit,L"Exit");
@@ -1132,7 +1153,7 @@ void handleCommand(HWND w,UINT id) {
     case New: newRecording(); break;
     case Folder: openFolder(); break;
     case Settings: settings(); break;
-    case CheckUpdates: if(!readyInstaller.empty()) installReadyUpdate(); else checkForUpdates(); break;
+    case CheckUpdates: offerAvailableUpdate(); break;
     case Exit:
         if(state==State::Saving) quitAfterSave=true;
         else if(state==State::Recording||state==State::Paused||state==State::Starting) { quitAfterSave=true; stopRecording(); }
@@ -1400,7 +1421,10 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     case TrayMessage:
         if(LOWORD(lp)==WM_CONTEXTMENU||LOWORD(lp)==WM_RBUTTONUP) trayMenu();
         else if(LOWORD(lp)==NIN_SELECT||LOWORD(lp)==NIN_KEYSELECT) newRecording();
-        else if(LOWORD(lp)==NIN_BALLOONUSERCLICK) { if(balloonOpensShare) showShare(); }
+        else if(LOWORD(lp)==NIN_BALLOONUSERCLICK) {
+            if(balloonClick==BalloonClick::Share) showShare();
+            else if(balloonClick==BalloonClick::Update) offerAvailableUpdate();
+        }
         return 0;
     case WM_COMMAND: handleCommand(w,LOWORD(wp)); return 0;
     case WM_CAPTURE_STARTED:
@@ -1416,12 +1440,12 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     }
     case WM_UPDATE_RESULT: {
         std::unique_ptr<UpdateResult> result(reinterpret_cast<UpdateResult*>(lp));
-        showUpdateResult(*result);
+        if(wp) quietUpdateResult(*result); else showUpdateResult(*result);
         return 0;
     }
     case WM_CAPTURE_NOTICE: {
         std::unique_ptr<std::wstring> text(reinterpret_cast<std::wstring*>(lp));
-        balloon(L"Glimpse audio",*text,false);
+        balloon(L"Glimpse audio",*text,BalloonClick::None);
         return 0;
     }
     case WM_CAPTURE_FINISHED: {
@@ -1448,6 +1472,7 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
         if(quitAfterSave) DestroyWindow(mainWindow); return 0;
     }
     case WM_TIMER:
+        if(wp==StartupUpdateTimer) { KillTimer(w,StartupUpdateTimer); checkForUpdates(true); return 0; }
         if(wp==ToastTimer) {
             if(!shareWindow) { KillTimer(w,ToastTimer); return 0; }
             POINT p; GetCursorPos(&p); RECT r; GetWindowRect(shareWindow,&r);
@@ -1522,6 +1547,7 @@ int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int) {
         if(!mainWindow) winrt::throw_last_error();
         WTSRegisterSessionNotification(mainWindow,NOTIFY_FOR_THIS_SESSION);
         readConfig(); addTray();
+        SetTimer(mainWindow,StartupUpdateTimer,StartupUpdateDelayMs,nullptr);
         if(!registerKey(config.hotkey)) { settings(); error(L"The recording shortcut is already in use. Choose another in Settings.",settingsWindow); }
         MSG msg;
         while(GetMessageW(&msg,nullptr,0,0)>0) {

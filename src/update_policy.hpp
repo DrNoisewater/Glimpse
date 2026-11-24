@@ -22,23 +22,40 @@ inline std::optional<Version> parseVersion(std::string_view text) {
     return v;
 }
 // The "sha256:<hex>" digest GitHub publishes for the release asset called `name`,
-// read from the latest-release JSON. Searches only inside that asset's object
-// (its fields end with browser_download_url). Returns 64 lowercase hex digits.
+// read from the latest-release JSON. Only the JSON object holding that asset's
+// "name" is searched, whatever order its fields come in, so another asset's digest
+// is never used. Returns 64 lowercase hex digits.
 inline std::optional<std::string> assetSha256(std::string_view json,std::string_view name) {
     const std::string quoted="\""+std::string(name)+"\"";
-    auto at=json.find(quoted);
+    const auto at=json.find(quoted);
     if(at==std::string_view::npos) return std::nullopt;
-    auto end=json.find("\"browser_download_url\"",at);
+    // Find the object enclosing `at`, skipping braces inside strings.
+    std::array<size_t,64> starts{};
+    size_t depth=0, begin=std::string_view::npos, end=std::string_view::npos;
+    for(size_t i=0;i<json.size() && end==std::string_view::npos;++i) {
+        const char c=json[i];
+        if(c=='"') {
+            if(i==at && depth) begin=starts[depth-1];
+            for(++i;i<json.size() && json[i]!='"';++i) if(json[i]=='\\') ++i;
+        } else if(c=='{') {
+            if(depth==starts.size()) return std::nullopt;
+            starts[depth++]=i;
+        } else if(c=='}') {
+            if(!depth) return std::nullopt;
+            if(begin==starts[--depth]) end=i;
+        }
+    }
     if(end==std::string_view::npos) return std::nullopt;
+    const std::string_view object=json.substr(begin,end-begin);
     constexpr std::string_view prefix="\"sha256:";
-    auto d=json.find(prefix,at);
-    if(d==std::string_view::npos || d>end || d+prefix.size()+64>json.size()) return std::nullopt;
-    std::string hex(json.substr(d+prefix.size(),64));
+    const auto d=object.find(prefix);
+    if(d==std::string_view::npos || d+prefix.size()+64>=object.size()) return std::nullopt;
+    std::string hex(object.substr(d+prefix.size(),64));
     for(char& c:hex) {
         if(c>='A' && c<='F') c=char(c-'A'+'a');
         if(!((c>='0' && c<='9') || (c>='a' && c<='f'))) return std::nullopt;
     }
-    if(json[d+prefix.size()+64]!='"') return std::nullopt;
+    if(object[d+prefix.size()+64]!='"') return std::nullopt;
     return hex;
 }
 inline bool isNewer(const Version& candidate,const Version& current) { return candidate>current; }
