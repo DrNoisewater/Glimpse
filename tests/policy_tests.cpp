@@ -1,4 +1,5 @@
 #include "policy.hpp"
+#include "update_policy.hpp"
 #include <cstdlib>
 #include <iostream>
 using namespace glimpse;
@@ -42,5 +43,13 @@ int main() {
     t.pause(400); t.resume(1000); expect(t.at(1100)==300,"duplicate pause does not shift origin");
     t.resume(1200); expect(t.at(1300)==500,"duplicate resume ignored");
     t.pause(1400); t.resume(2000); expect(t.at(2100)==700,"multiple pauses excluded");
+    expect(parseVersion("v0.3.2")==Version{0,3,2},"release tag parses");
+    expect(parseVersion("10.20.30")==Version{10,20,30},"plain version parses");
+    expect(!parseVersion("v1.2")&&!parseVersion("1.2.3-beta")&&!parseVersion("1..3")&&!parseVersion(""),"malformed versions rejected");
+    expect(isNewer(Version{0,4,0},Version{0,3,9})&&isNewer(Version{0,3,10},Version{0,3,9}),"newer release detected numerically");
+    expect(!isNewer(Version{0,3,2},Version{0,3,2})&&!isNewer(Version{0,3,1},Version{0,3,2}),"same or older is not an update");
+    expect(versionText(Version{1,0,12})=="1.0.12","version text");
+    expect(releaseTag(R"({"url":"x","tag_name" : "v0.4.0","name":"Glimpse v0.4.0"})")==std::string("v0.4.0"),"tag read from release JSON");
+    expect(!releaseTag(R"({"message":"Not Found"})"),"missing release has no tag");
     std::cout<<checks<<" policy checks passed\n";
 }

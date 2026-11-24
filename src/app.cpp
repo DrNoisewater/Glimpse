@@ -1,5 +1,6 @@
 #include "capture.hpp"
 #include "version.h"
+#include "update_policy.hpp"
 #include <windowsx.h>
 #include <objidl.h>
 #include <commctrl.h>
@@ -8,12 +9,14 @@
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <wtsapi32.h>
+#include <winhttp.h>
 #include <winrt/base.h>
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <vector>
 #include <sstream>
+#include <thread>
 // GDI+ is used only for anti-aliased shapes; it expects min/max in its namespace.
 namespace Gdiplus { using std::min; using std::max; }
 #include <gdiplus.h>
@@ -22,7 +25,8 @@ using namespace glimpse;
 namespace fs=std::filesystem;
 namespace gp=Gdiplus;
 namespace {
-constexpr UINT TrayMessage=WM_APP+1, New=100, Recent=101, Folder=102, Settings=103, Exit=104;
+constexpr UINT TrayMessage=WM_APP+1, New=100, Recent=101, Folder=102, Settings=103, Exit=104, CheckUpdates=105;
+constexpr UINT WM_UPDATE_RESULT=WM_APP+13; // lParam: heap UpdateResult* the receiver deletes
 constexpr UINT Record=200, Pause=201, Cancel=202, Copy=203, Reveal=204, Drag=205;
 constexpr UINT Mic=206, SystemAudio=207, Dismiss=208, MicVolume=210, SystemVolume=211;
 constexpr UINT AudioMenuBase=400, ToastTimer=4;
@@ -893,6 +897,71 @@ void browseFolder() {
         if(SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))) { SetDlgItemTextW(settingsWindow,310,path); CoTaskMemFree(path); }
     }
 }
+// ---------- update check ----------
+constexpr wchar_t ReleasesPage[]=L"https://github.com/DrNoisewater/Glimpse/releases";
+struct UpdateResult { enum Kind { Failed, Current, Available } kind{Failed}; std::wstring version, detail; };
+bool checkingUpdates{};
+std::wstring widen(const std::string& s) { return std::wstring(s.begin(),s.end()); } // ASCII only
+// GET https://api.github.com/repos/DrNoisewater/Glimpse/releases/latest. Sends only a
+// generic product User-Agent (GitHub requires one); nothing about the user.
+UpdateResult fetchLatestRelease() {
+    UpdateResult result;
+    auto close=[](HINTERNET h) { if(h) WinHttpCloseHandle(h); };
+    std::unique_ptr<void,decltype(close)> session(WinHttpOpen(L"Glimpse/" GLIMPSE_VERSION,WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0),close);
+    if(!session) { result.detail=L"Windows couldn't start a web connection."; return result; }
+    WinHttpSetTimeouts(session.get(),10000,10000,10000,15000);
+    std::unique_ptr<void,decltype(close)> connection(WinHttpConnect(session.get(),L"api.github.com",INTERNET_DEFAULT_HTTPS_PORT,0),close);
+    std::unique_ptr<void,decltype(close)> request(connection?WinHttpOpenRequest(connection.get(),L"GET",
+        L"/repos/DrNoisewater/Glimpse/releases/latest",nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE):nullptr,close);
+    if(!request || !WinHttpSendRequest(request.get(),L"Accept: application/vnd.github+json\r\n",DWORD(-1),WINHTTP_NO_REQUEST_DATA,0,0,0)
+        || !WinHttpReceiveResponse(request.get(),nullptr)) {
+        result.detail=L"GitHub couldn't be reached (error "+std::to_wstring(GetLastError())+L"). Check your internet connection.";
+        return result;
+    }
+    DWORD status=0, size=sizeof(status);
+    WinHttpQueryHeaders(request.get(),WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX);
+    if(status!=200) { result.detail=L"GitHub answered with status "+std::to_wstring(status)+L"."; return result; }
+    std::string body;
+    for(DWORD available=0; WinHttpQueryDataAvailable(request.get(),&available) && available && body.size()<1048576;) {
+        std::string chunk(available,'\0'); DWORD read=0;
+        if(!WinHttpReadData(request.get(),chunk.data(),available,&read) || !read) break;
+        body.append(chunk,0,read);
+    }
+    auto tag=releaseTag(body);
+    auto latest=tag?parseVersion(*tag):std::nullopt;
+    auto current=parseVersion(GLIMPSE_VERSION_A);
+    if(!latest || !current) { result.detail=L"GitHub's answer didn't include a version Glimpse understands."; return result; }
+    result.version=widen(versionText(*latest));
+    result.kind=isNewer(*latest,*current)?UpdateResult::Available:UpdateResult::Current;
+    return result;
+}
+void checkForUpdates() {
+    if(checkingUpdates) return;
+    checkingUpdates=true;
+    std::thread([] {
+        auto result=new UpdateResult;
+        try { *result=fetchLatestRelease(); } catch(...) { result->kind=UpdateResult::Failed; result->detail=L"The update check failed unexpectedly."; }
+        if(!PostMessageW(mainWindow,WM_UPDATE_RESULT,0,reinterpret_cast<LPARAM>(result))) delete result;
+    }).detach();
+}
+void openUrl(const std::wstring& url) {
+    if(reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL))<=32)
+        error(L"Couldn't open your web browser. Visit "+url);
+}
+void showUpdateResult(const UpdateResult& r) {
+    checkingUpdates=false;
+    if(r.kind==UpdateResult::Available) {
+        auto text=L"Glimpse "+r.version+L" is available. You have " GLIMPSE_VERSION L".\n\nOpen the download page? Run Glimpse-Setup-"+r.version+L".exe from there to update.";
+        if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONINFORMATION|MB_SETFOREGROUND)==IDYES)
+            openUrl(std::wstring(ReleasesPage)+L"/tag/v"+r.version);
+    } else if(r.kind==UpdateResult::Current) {
+        MessageBoxW(mainWindow,L"You have the latest version of Glimpse (" GLIMPSE_VERSION L").",L"Glimpse update",MB_OK|MB_ICONINFORMATION|MB_SETFOREGROUND);
+    } else {
+        auto text=L"Couldn't check for updates. "+r.detail+L"\n\nOpen the releases page instead?";
+        if(MessageBoxW(mainWindow,text.c_str(),L"Glimpse update",MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND)==IDYES) openUrl(ReleasesPage);
+    }
+}
 void trayMenu() {
     HMENU menu=CreatePopupMenu(), recent=CreatePopupMenu(); recentFiles.clear();
     std::error_code ec;
@@ -918,6 +987,7 @@ void trayMenu() {
     AppendMenuW(menu,MF_STRING,Folder,L"Open captures folder");
     AppendMenuW(menu,MF_STRING|(state==State::Idle?0:MF_GRAYED),Settings,L"Settings…");
     AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+    AppendMenuW(menu,MF_STRING|(checkingUpdates?MF_GRAYED:0),CheckUpdates,checkingUpdates?L"Checking for updates…":L"Check for updates…");
     AppendMenuW(menu,MF_STRING|MF_GRAYED,0,L"Glimpse " GLIMPSE_VERSION);
     AppendMenuW(menu,MF_STRING,Exit,L"Exit");
     POINT p; GetCursorPos(&p); SetForegroundWindow(mainWindow);
@@ -938,6 +1008,7 @@ void handleCommand(HWND w,UINT id) {
     case New: newRecording(); break;
     case Folder: openFolder(); break;
     case Settings: settings(); break;
+    case CheckUpdates: checkForUpdates(); break;
     case Exit:
         if(state==State::Saving) quitAfterSave=true;
         else if(state==State::Recording||state==State::Paused||state==State::Starting) { quitAfterSave=true; stopRecording(); }
@@ -1214,6 +1285,11 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
             EnableWindow(pauseButton,TRUE); audioControls(); refreshIndicators();
         }
         return 0;
+    case WM_UPDATE_RESULT: {
+        std::unique_ptr<UpdateResult> result(reinterpret_cast<UpdateResult*>(lp));
+        showUpdateResult(*result);
+        return 0;
+    }
     case WM_CAPTURE_NOTICE: {
         std::unique_ptr<std::wstring> text(reinterpret_cast<std::wstring*>(lp));
         balloon(L"Glimpse audio",*text,false);

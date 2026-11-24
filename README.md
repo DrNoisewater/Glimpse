@@ -73,8 +73,9 @@ change, device error, or session lock stops capture and attempts to save what
 has already been encoded.
 
 Right-click the tray icon for New Recording, Recent Captures (last ten), Open
-Captures Folder, Settings, or Exit. Clicking a recent capture opens its share
-panel. Settings offers the shortcut, folder, quality, frame-rate ceiling,
+Captures Folder, Settings, Check for updates, or Exit. Clicking a recent capture opens its share
+panel. **Check for updates** asks GitHub for the latest release (sending only a
+"Glimpse/version" user agent) and offers to open its download page if it's newer. Settings offers the shortcut, folder, quality, frame-rate ceiling,
 opt-in sign-in startup, audio defaults and software-encoding compatibility mode.
 
 ## Narration, mixing and volume
