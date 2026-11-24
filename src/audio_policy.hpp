@@ -3,9 +3,66 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 namespace glimpse {
 enum AudioMode : unsigned { AudioSilent=0, AudioMic=1, AudioSystem=2, AudioBoth=3 };
+// Why a microphone or system-audio endpoint could not be opened or stopped
+// delivering. Values are the WASAPI / Win32 HRESULTs, kept portable for tests.
+enum class AudioProblem { InUse, Blocked, Missing, Lost, Other };
+inline AudioProblem classifyAudioFailure(uint32_t hr) {
+    switch(hr) {
+    case 0x8889000Au: // AUDCLNT_E_DEVICE_IN_USE: another app holds it in exclusive mode
+        return AudioProblem::InUse;
+    case 0x80070005u: // E_ACCESSDENIED: Windows microphone privacy setting
+        return AudioProblem::Blocked;
+    case 0x80070490u: // E_NOTFOUND: no default endpoint
+        return AudioProblem::Missing;
+    case 0x88890004u: // AUDCLNT_E_DEVICE_INVALIDATED: unplugged, or taken over mid-recording
+    case 0x88890026u: // AUDCLNT_E_RESOURCES_INVALIDATED
+    case 0x88890010u: // AUDCLNT_E_SERVICE_NOT_RUNNING
+        return AudioProblem::Lost;
+    default: return AudioProblem::Other;
+    }
+}
+// Short, actionable tray text. Recording always continues; the source is
+// recorded as silence and retried until it becomes available again.
+inline std::wstring audioProblemText(bool system,uint32_t hr) {
+    const wchar_t* source=system?L"System audio":L"Microphone";
+    const wchar_t* lower=system?L"system audio":L"the microphone";
+    const std::wstring tail=L" Recording continues without it and picks it up again when it's free.";
+    switch(classifyAudioFailure(hr)) {
+    case AudioProblem::InUse:
+        return std::wstring(L"Another app has exclusive control of ")+(system?L"the sound output":L"the microphone")+
+            L", so Windows won't share it."+tail;
+    case AudioProblem::Blocked:
+        return std::wstring(L"Windows privacy settings are blocking ")+lower+L" for desktop apps."+tail;
+    case AudioProblem::Missing:
+        return std::wstring(L"No default ")+(system?L"sound output":L"microphone")+L" was found."+tail;
+    case AudioProblem::Lost:
+        return std::wstring(source)+L" was disconnected or taken over by another app."+tail;
+    default: {
+        wchar_t code[16]{};
+        static const wchar_t hex[]=L"0123456789ABCDEF";
+        for(int i=0;i<8;++i) code[i]=hex[(hr>>(28-4*i))&15];
+        return std::wstring(L"Windows couldn't start ")+lower+L" (error 0x"+code+L")."+tail;
+    }
+    }
+}
+// Retry pacing for an unavailable endpoint, in 100 ns ticks. Also records
+// whether the source was ever missing so the saved-file summary can say so.
+struct AudioSourceHealth {
+    static constexpr int64_t retryInterval=20000000; // 2 s
+    int64_t retryAt{};
+    bool down{}, everDown{}, everUp{};
+    bool shouldTry(int64_t now) const { return !down || now>=retryAt; }
+    // Returns true when this is a new outage worth telling the user about.
+    bool fail(int64_t now) { retryAt=now+retryInterval; everDown=true; return !std::exchange(down,true); }
+    // Returns true when the source came back after an outage.
+    bool recover() { everUp=true; return std::exchange(down,false); }
+    void disable() { down=false; retryAt=0; }
+};
 inline int64_t audioFrameAt(int64_t ticks) { return ticks/10000000*48000+(ticks%10000000)*48000/10000000; }
 inline int64_t audioTimeAt(int64_t frame) { return frame/48000*10000000+(frame%48000)*10000000/48000; }
 inline int64_t audioNearestFrame(int64_t ticks) { return int64_t(std::llround(double(ticks)*48000./10000000.)); }

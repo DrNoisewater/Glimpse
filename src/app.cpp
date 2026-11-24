@@ -162,7 +162,9 @@ std::wstring hotkeyText(WORD key) {
     if(GetKeyNameTextW(code,name,int(std::size(name)))>0) s+=name; else s+=wchar_t(vk);
     return s;
 }
-void balloon(const std::wstring& title,const std::wstring& body) {
+bool balloonOpensShare{}; // Only the "capture saved" balloon should open the share panel when clicked.
+void balloon(const std::wstring& title,const std::wstring& body,bool opensShare=true) {
+    balloonOpensShare=opensShare;
     tray.uFlags=NIF_INFO; wcsncpy_s(tray.szInfoTitle,title.c_str(),_TRUNCATE);
     wcsncpy_s(tray.szInfo,body.c_str(),_TRUNCATE); tray.dwInfoFlags=NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY,&tray);
@@ -1203,7 +1205,7 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     case TrayMessage:
         if(LOWORD(lp)==WM_CONTEXTMENU||LOWORD(lp)==WM_RBUTTONUP) trayMenu();
         else if(LOWORD(lp)==NIN_SELECT||LOWORD(lp)==NIN_KEYSELECT) newRecording();
-        else if(LOWORD(lp)==NIN_BALLOONUSERCLICK) showShare();
+        else if(LOWORD(lp)==NIN_BALLOONUSERCLICK) { if(balloonOpensShare) showShare(); }
         return 0;
     case WM_COMMAND: handleCommand(w,LOWORD(wp)); return 0;
     case WM_CAPTURE_STARTED:
@@ -1212,11 +1214,23 @@ LRESULT CALLBACK mainProc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
             EnableWindow(pauseButton,TRUE); audioControls(); refreshIndicators();
         }
         return 0;
+    case WM_CAPTURE_NOTICE: {
+        std::unique_ptr<std::wstring> text(reinterpret_cast<std::wstring*>(lp));
+        balloon(L"Glimpse audio",*text,false);
+        return 0;
+    }
     case WM_CAPTURE_FINISHED: {
         std::unique_ptr<CaptureResult> result(reinterpret_cast<CaptureResult*>(lp)); recorder.join(); closeSelection();
         if(!result->file.empty()) {
             latestFile=result->file;
-            wchar_t detail[128]; swprintf_s(detail,L"%.1f MB  ·  %.1f s  ·  %s",double(result->bytes)/1048576.,result->seconds,audioArmed?L"with audio":L"no audio");
+            const unsigned never=result->audioNeverCaptured, gaps=result->audioInterrupted&~never;
+            const wchar_t* sound=!audioArmed?L"no audio":
+                never==AudioBoth?L"no audio (sources unavailable)":
+                never&AudioMic?L"without microphone":
+                never&AudioSystem?L"without system audio":
+                gaps&AudioMic?L"with audio · mic gaps":
+                gaps&AudioSystem?L"with audio · system audio gaps":L"with audio";
+            wchar_t detail[128]; swprintf_s(detail,L"%.1f MB  ·  %.1f s  ·  %s",double(result->bytes)/1048576.,result->seconds,sound);
             shareSummary=latestFile.filename().wstring()+L"\n"+detail;
             startClipboardCopy(); showShare();
         }

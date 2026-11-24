@@ -1,3 +1,12 @@
+# Glimpse 0.3.2
+
+- A microphone or sound output that another app holds in exclusive mode (or
+  that is blocked, missing or unplugged) no longer stops the recording. Glimpse
+  keeps recording, fills that source with silence, shows a tray message saying
+  which source is missing and why, and picks it back up automatically once it's
+  free. The saved-file summary says "without microphone" or "mic gaps" when
+  that happened.
+
 # Glimpse 0.3.1
 
 - Fixed "Windows could not exclude the recorder controls from capture" right

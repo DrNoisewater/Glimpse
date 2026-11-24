@@ -103,9 +103,18 @@ The narration and playback audio are mixed into the resulting MP4.
   can still distort; reduce levels if the meters reach amber/red.
 - Muting releases that endpoint. Pause discards audio rather than saving it;
   an enabled microphone may still show Windows’ microphone-use indicator.
-- If a selected device cannot open or is disconnected, the app reports the
-  problem and attempts to save the usable recording. Device hot-swapping and
-  a dedicated device picker are not implemented; choose defaults in Windows.
+- If an audio source can't be opened or drops out mid-recording, the recording
+  keeps going: that source is recorded as silence, Glimpse shows a tray message
+  saying why, retries every 2 seconds, and resumes it automatically once it's free.
+  The saved-file summary notes "without microphone" or "mic gaps" when that happened.
+- Apps that take **exclusive control** of a device (some music and live-audio
+  apps do this for low latency) lock everyone else out; Windows doesn't let any
+  other app read that device until they let go. To record it alongside such an
+  app, set that app to shared mode, or in Windows open Sound settings → the
+  device → Properties → Advanced and untick *Allow applications to take
+  exclusive control of this device*. A different microphone also works if the app
+  only holds one device. Device hot-swapping and a dedicated device picker are
+  not implemented; choose defaults in Windows.
 - This records narration **while capturing**. It is not an editor for adding
   voiceover to an existing video file afterward.
 
